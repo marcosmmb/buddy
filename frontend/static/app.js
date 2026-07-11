@@ -81,6 +81,10 @@ function monthTotal() {
   return state.expenses.reduce((total, expense) => total + Number(expense.amount || 0), 0);
 }
 
+function monthSharedTotal() {
+  return state.expenses.reduce((total, expense) => total + (expense.is_shared ? Number(expense.amount || 0) : 0), 0);
+}
+
 function expenseDuplicateMap(expenses) {
   const counts = new Map();
   for (const expense of expenses) {
@@ -107,6 +111,11 @@ function expenseDuplicateMap(expenses) {
     result.set(expense.id, counts.get(key) > 1);
   }
   return result;
+}
+
+function duplicateExpenses(expenses) {
+  const duplicates = expenseDuplicateMap(expenses);
+  return expenses.filter((expense) => duplicates.get(expense.id));
 }
 
 function memberExpenseSummary(expenses = state.expenses) {
@@ -415,6 +424,58 @@ function renderMonthlySettlements() {
   `;
 }
 
+function renderCategoryBreakdownTable(data) {
+  const byPerson = new Map();
+  for (const row of data.by_person_category || []) {
+    if (!byPerson.has(row.category)) byPerson.set(row.category, []);
+    byPerson.get(row.category).push(`${escapeHtml(row.person)}: ${currency(row.total)}`);
+  }
+  return renderTable(
+    "Total by category",
+    ["Category", "Total", "Paid by person"],
+    (data.by_category || []).map((row) => [
+      escapeHtml(row.name),
+      currency(row.total),
+      byPerson.get(row.name)?.join("<br />") || "",
+    ]),
+    true,
+  );
+}
+
+function renderDuplicateExpenseSection(expenses) {
+  const rows = duplicateExpenses(expenses || []);
+  if (!rows.length) return "";
+  return `
+    <div class="panel stack">
+      <div>
+        <h2>Possible duplicates</h2>
+        <p class="muted">These entries match another expense by date, category, payer, amount, description, and type.</p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Date</th><th>Category</th><th>Paid by</th><th>Description</th><th>Type</th><th>Amount</th></tr></thead>
+          <tbody>
+            ${rows
+              .map(
+                (expense) => `
+                <tr class="duplicate-row">
+                  <td>${escapeHtml(expense.date)}</td>
+                  <td><span class="swatch" style="background:${escapeHtml(expense.category_color)}"></span>${escapeHtml(expense.category)}</td>
+                  <td>${escapeHtml(expense.paid_by)}</td>
+                  <td>${escapeHtml(expense.description)}<span class="duplicate-pill">Possible duplicate</span></td>
+                  <td><span class="pill">${expense.is_shared ? "Shared" : "Individual"}</span></td>
+                  <td class="amount">${currency(expense.amount, expense.currency)}</td>
+                </tr>
+              `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 function renderOverview() {
   const data = state.overview?.summary || {};
   const payerRows = data.by_person?.map((row) => ({ name: row.name, total: row.total })) || [];
@@ -430,6 +491,7 @@ function renderOverview() {
         </label>
         <label>Period<select id="period-select">${periodChoices()}</select></label>
       </div>
+      ${renderDuplicateExpenseSection(state.overview?.expenses || [])}
       <div class="grid three">
         <div class="card metric"><span class="muted">${state.periodType === "year" ? "Year total" : "Month total"}</span><span class="metric-value">${currency(data.total)}</span></div>
         <div class="card metric"><span class="muted">Categories</span><span class="metric-value">${data.by_category?.length || 0}</span></div>
@@ -453,11 +515,8 @@ function renderOverview() {
       ${state.periodType === "year" ? renderBarChart("Monthly chart", state.overview?.monthly_totals || [], "month", "total") : ""}
       ${state.periodType === "year" ? renderTable("Total by month", ["Month", "Total"], state.overview?.monthly_totals?.map((row) => [row.month, currency(row.total)]) || []) : ""}
       ${state.periodType === "month" ? renderMonthlySettlements() : ""}
-      <div class="grid two">
-        ${renderTable("Total by category", ["Category", "Total"], data.by_category?.map((row) => [row.name, currency(row.total)]) || [])}
-        ${renderTable("Total paid by person", ["Person", "Shared", "Individual", "Total"], data.by_person?.map((row) => [row.name, currency(row.shared), currency(row.individual), currency(row.total)]) || [])}
-      </div>
-      ${renderTable("Paid by person for each category", ["Person", "Category", "Total"], data.by_person_category?.map((row) => [row.person, row.category, currency(row.total)]) || [])}
+      ${renderTable("Total paid by person", ["Person", "Shared", "Individual", "Total"], data.by_person?.map((row) => [row.name, currency(row.shared), currency(row.individual), currency(row.total)]) || [])}
+      ${renderCategoryBreakdownTable(data)}
       ${state.periodType === "month" ? `<div class="panel stack"><h2>Expenses this month</h2>${renderExpenseTable(state.overview?.expenses || [])}</div>` : ""}
     </section>
   `;
@@ -471,7 +530,9 @@ function renderExpenses() {
       <div class="toolbar">
         <label>Expense month<select id="expense-month-select">${monthChoices()}</select></label>
         <div class="card metric compact-metric"><span class="muted">Month total</span><span class="metric-value" id="expense-month-total">${currency(monthTotal(), tracker.default_currency)}</span></div>
+        <div class="card metric compact-metric"><span class="muted">Month shared total</span><span class="metric-value" id="expense-month-shared-total">${currency(monthSharedTotal(), tracker.default_currency)}</span></div>
       </div>
+      ${renderDuplicateExpenseSection(state.expenses)}
       <div class="panel stack">
         <div>
           <h2>Share split for ${escapeHtml(state.expenseMonth)}</h2>
@@ -668,27 +729,7 @@ function renderTrackerSettings() {
   const tracker = currentTracker();
   return `
     <section class="grid two">
-      <div class="panel stack">
-        <h2>Categories</h2>
-        <form id="category-form" class="stack">
-          <label>Name<input name="name" required /></label>
-          <label>Color<input name="color" type="color" value="#f1b84b" /></label>
-          <button class="button" type="submit">Add category</button>
-        </form>
-        <div class="stack">
-          ${state.categories
-            .map(
-              (category) => `
-              <div class="row between">
-                <span><span class="swatch" style="background:${escapeHtml(category.color)}"></span>${escapeHtml(category.name)}</span>
-                ${canManageTracker() ? `<button class="button small" data-delete-category="${category.id}">Delete</button>` : ""}
-              </div>
-            `,
-            )
-            .join("") || '<span class="muted">No categories yet.</span>'}
-        </div>
-      </div>
-      <div class="panel stack">
+      <div class="panel stack" style="grid-column: 1 / -1">
         <h2>Default members and shares</h2>
         ${
           canManageTracker()
@@ -709,6 +750,26 @@ function renderTrackerSettings() {
               </form>`
             : `<div class="empty">Only tracker owners can manage members.</div>`
         }
+      </div>
+      <div class="panel stack" style="grid-column: 1 / -1">
+        <h2>Categories</h2>
+        <form id="category-form" class="stack">
+          <label>Name<input name="name" required /></label>
+          <label>Color<input name="color" type="color" value="#f1b84b" /></label>
+          <button class="button" type="submit">Add category</button>
+        </form>
+        <div class="stack">
+          ${state.categories
+            .map(
+              (category) => `
+              <div class="row between">
+                <span><span class="swatch" style="background:${escapeHtml(category.color)}"></span>${escapeHtml(category.name)}</span>
+                ${canManageTracker() ? `<button class="button small" data-delete-category="${category.id}">Delete</button>` : ""}
+              </div>
+            `,
+            )
+            .join("") || '<span class="muted">No categories yet.</span>'}
+        </div>
       </div>
       ${
         state.user.is_admin
@@ -1037,6 +1098,8 @@ function scheduleExpenseAutosave(expenseId) {
         state.expenses = state.expenses.map((expense) => (expense.id === expenseId ? updated : expense));
         const total = document.querySelector("#expense-month-total");
         if (total) total.textContent = currency(monthTotal(), tracker.default_currency);
+        const sharedTotal = document.querySelector("#expense-month-shared-total");
+        if (sharedTotal) sharedTotal.textContent = currency(monthSharedTotal(), tracker.default_currency);
         const memberSummary = document.querySelector("#member-month-summary");
         if (memberSummary) memberSummary.innerHTML = renderMemberSummaryCards();
         setAutosaveStatus(expenseId, "Saved", "positive");
