@@ -17,7 +17,7 @@ Buddy is a small self-hosted budgeting and expense tracker built with Litestar, 
 
 ```bash
 cp .env.example .env
-docker compose up --build
+make up
 ```
 
 Open http://localhost:3088.
@@ -34,11 +34,9 @@ Change them before exposing the app anywhere outside your machine.
 ## Local Development
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 export DATABASE_URL=postgresql+psycopg://buddy:buddy@localhost:5432/buddy
-uvicorn app.main:app --reload --port 3088
+uv run uvicorn app.main:app --reload --port 3088
 ```
 
 For local development with Postgres in Docker:
@@ -50,8 +48,18 @@ docker compose up db
 Run the API smoke test:
 
 ```bash
-python scripts/smoke_test.py
+uv run python scripts/smoke_test.py
 ```
+
+## Publishing
+
+The app version lives in `pyproject.toml`.
+
+```bash
+make publish
+```
+
+This builds and pushes `marcosmmb/buddy:<version>` and `marcosmmb/buddy:latest`.
 
 ## Notes
 

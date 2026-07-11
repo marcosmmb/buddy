@@ -1,16 +1,28 @@
 COMPOSE ?= docker compose
-PYTHON ?= .venv/bin/python
+UV ?= uv
+VERSION ?= $(shell $(UV) version --short)
+DOCKER_IMAGE ?= marcosmmb/buddy
 DATABASE_URL ?= postgresql+psycopg://buddy:buddy@localhost:5432/buddy
 ADMIN_EMAIL ?= admin@buddy.local
-SPREADSHEET ?= /Users/marcos/Downloads/Monthly Expenses (Canada).xlsx
+SPREADSHEET ?= /tmp/monthly_expenses.xlsx
 
-.PHONY: up down restart build logs ps test smoke import-monthly import-monthly-replace db-shell app-shell
+.PHONY: sync up down restart build docker-image publish logs ps test smoke import-monthly import-monthly-replace db-shell app-shell
+
+sync:
+	$(UV) sync
 
 up:
-	$(COMPOSE) up -d --build
+	APP_VERSION=$(VERSION) $(COMPOSE) up -d --build
 
 build:
-	$(COMPOSE) build
+	APP_VERSION=$(VERSION) $(COMPOSE) build
+
+docker-image:
+	docker build --build-arg APP_VERSION=$(VERSION) --tag $(DOCKER_IMAGE):$(VERSION) --tag $(DOCKER_IMAGE):latest .
+
+publish: docker-image
+	docker push $(DOCKER_IMAGE):$(VERSION)
+	docker push $(DOCKER_IMAGE):latest
 
 down:
 	$(COMPOSE) down
@@ -24,16 +36,16 @@ ps:
 	$(COMPOSE) ps
 
 test:
-	LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(PYTHON) -m unittest discover -s tests
+	LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(UV) run python -m unittest discover -s tests
 
 smoke:
-	DATABASE_URL="$(DATABASE_URL)" LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(PYTHON) scripts/smoke_test.py
+	DATABASE_URL="$(DATABASE_URL)" LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(UV) run python scripts/smoke_test.py
 
 import-monthly:
-	DATABASE_URL="$(DATABASE_URL)" ADMIN_EMAIL="$(ADMIN_EMAIL)" $(PYTHON) scripts/import_monthly_expenses_xlsx.py "$(SPREADSHEET)"
+	DATABASE_URL="$(DATABASE_URL)" ADMIN_EMAIL="$(ADMIN_EMAIL)" $(UV) run python scripts/import_monthly_expenses_xlsx.py "$(SPREADSHEET)"
 
 import-monthly-replace:
-	DATABASE_URL="$(DATABASE_URL)" ADMIN_EMAIL="$(ADMIN_EMAIL)" $(PYTHON) scripts/import_monthly_expenses_xlsx.py "$(SPREADSHEET)" --replace
+	DATABASE_URL="$(DATABASE_URL)" ADMIN_EMAIL="$(ADMIN_EMAIL)" $(UV) run python scripts/import_monthly_expenses_xlsx.py "$(SPREADSHEET)" --replace
 
 db-shell:
 	$(COMPOSE) exec db psql -U buddy -d buddy
