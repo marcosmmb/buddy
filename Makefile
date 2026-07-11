@@ -6,9 +6,8 @@ DOCKER_IMAGE ?= marcosmmb/buddy
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 DATABASE_URL ?= sqlite:///./buddy.sqlite3
 ADMIN_EMAIL ?= admin@buddy.local
-SPREADSHEET ?= /tmp/monthly_expenses.xlsx
 
-.PHONY: sync up down restart build docker-image publish logs ps test smoke import-monthly import-monthly-replace db-shell app-shell
+.PHONY: sync up down restart build docker-image publish logs ps test smoke db-shell app-shell
 
 sync:
 	$(UV) sync
@@ -41,12 +40,6 @@ test:
 
 smoke:
 	DATABASE_URL="$(DATABASE_URL)" LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(UV) run python scripts/smoke_test.py
-
-import-monthly:
-	DATABASE_URL="$(DATABASE_URL)" ADMIN_EMAIL="$(ADMIN_EMAIL)" $(UV) run python scripts/import_monthly_expenses_xlsx.py "$(SPREADSHEET)"
-
-import-monthly-replace:
-	DATABASE_URL="$(DATABASE_URL)" ADMIN_EMAIL="$(ADMIN_EMAIL)" $(UV) run python scripts/import_monthly_expenses_xlsx.py "$(SPREADSHEET)" --replace
 
 db-shell:
 	$(COMPOSE) exec app python -m sqlite3 /data/buddy.sqlite3
