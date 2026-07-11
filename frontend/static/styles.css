@@ -455,6 +455,25 @@ label {
   min-width: 160px;
 }
 
+.chart-controls {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 10px;
+  justify-content: flex-end;
+  max-width: 360px;
+  width: 100%;
+}
+
+.chart-controls .compact-label {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.table-header .compact-label {
+  min-width: 180px;
+}
+
 input,
 select,
 textarea {
@@ -806,6 +825,20 @@ body[data-theme="dark"] .empty {
 
   .toolbar {
     align-items: stretch;
+  }
+
+  .chart-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .table-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .chart-controls {
+    justify-content: stretch;
   }
 
   .auth-hero {

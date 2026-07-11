@@ -13,6 +13,8 @@ const state = {
   period: localStorage.getItem("buddy_period") || new Date().toISOString().slice(0, 7),
   expenseMonth: localStorage.getItem("buddy_expense_month") || new Date().toISOString().slice(0, 7),
   categoryChartMember: localStorage.getItem("buddy_category_chart_member") || "all",
+  categoryChartSort: localStorage.getItem("buddy_category_chart_sort") || "amount",
+  categoryBreakdownSort: localStorage.getItem("buddy_category_breakdown_sort") || "amount",
   categories: [],
   expenses: [],
   overview: null,
@@ -210,15 +212,15 @@ function renderMemberBreakdown(rows, emptyText = "No expenses for this selection
   const tracker = currentTracker();
   return renderTable(
     "Member breakdown",
-    ["Member", "Total expenses", "Shared expenses", "Individual expenses", "Paid total", "Paid shared", "Paid individual"],
+    ["Member", "Paid shared", "Paid individual", "Paid total", "Shared expenses adjusted", "Individual expenses adjusted", "Total expenses adjusted"],
     (rows || []).map((row) => [
       escapeHtml(row.name),
-      currency(row.responsibility_total, tracker.default_currency),
-      currency(row.responsibility_shared, tracker.default_currency),
-      currency(row.responsibility_individual, tracker.default_currency),
-      currency(row.paid_total, tracker.default_currency),
       currency(row.paid_shared, tracker.default_currency),
       currency(row.paid_individual, tracker.default_currency),
+      currency(row.paid_total, tracker.default_currency),
+      currency(row.responsibility_shared, tracker.default_currency),
+      currency(row.responsibility_individual, tracker.default_currency),
+      currency(row.responsibility_total, tracker.default_currency),
     ]),
     true,
     emptyText,
@@ -226,10 +228,10 @@ function renderMemberBreakdown(rows, emptyText = "No expenses for this selection
 }
 
 function categoryRowsForSelectedMember(summary) {
-  if (state.categoryChartMember === "all") return summary.by_category || [];
+  if (state.categoryChartMember === "all") return sortCategoryRows(summary.by_category || []);
   const selectedId = Number(state.categoryChartMember);
   const selectedMember = currentTracker()?.members.find((member) => member.user_id === selectedId);
-  if (!selectedMember) return summary.by_category || [];
+  if (!selectedMember) return sortCategoryRows(summary.by_category || []);
   const totals = new Map();
   const colors = new Map();
   for (const row of summary.by_person_category || []) {
@@ -238,7 +240,15 @@ function categoryRowsForSelectedMember(summary) {
       colors.set(row.category, row.category_color);
     }
   }
-  return [...totals.entries()].map(([name, total]) => ({ name, total, color: colors.get(name) })).sort((a, b) => a.name.localeCompare(b.name));
+  return sortCategoryRows([...totals.entries()].map(([name, total]) => ({ name, total, color: colors.get(name) })));
+}
+
+function sortCategoryRows(rows, sort = state.categoryChartSort) {
+  const sorted = [...(rows || [])];
+  if (sort === "alpha") {
+    return sorted.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  }
+  return sorted.sort((a, b) => Number(b.total || 0) - Number(a.total || 0) || String(a.name || "").localeCompare(String(b.name || "")));
 }
 
 async function api(path, options = {}) {
@@ -507,16 +517,40 @@ function renderCategoryBreakdownTable(data) {
     if (!byPerson.has(row.category)) byPerson.set(row.category, []);
     byPerson.get(row.category).push(`${escapeHtml(row.person)}: ${currency(row.total)}`);
   }
-  return renderTable(
-    "Total by category",
-    ["Category", "Total", "Paid by person"],
-    (data.by_category || []).map((row) => [
-      `<span class="swatch" style="background:${escapeHtml(row.color || "#f1b84b")}"></span>${escapeHtml(row.name)}`,
-      currency(row.total),
-      byPerson.get(row.name)?.join("<br />") || "",
-    ]),
-    true,
-  );
+  const rows = sortCategoryRows(data.by_category || [], state.categoryBreakdownSort);
+  return `
+    <div class="panel stack">
+      <div class="row between table-header">
+        <h2>Total by category</h2>
+        <label class="compact-label">Order
+          <select id="category-breakdown-sort">
+            <option value="amount" ${state.categoryBreakdownSort === "amount" ? "selected" : ""}>Amount</option>
+            <option value="alpha" ${state.categoryBreakdownSort === "alpha" ? "selected" : ""}>Alphabetical</option>
+          </select>
+        </label>
+      </div>
+      ${
+        rows.length
+          ? `<div class="table-scroll"><table>
+              <thead><tr><th>Category</th><th>Total</th><th>Paid by person</th></tr></thead>
+              <tbody>
+                ${rows
+                  .map(
+                    (row) => `
+                    <tr>
+                      <td><span class="swatch" style="background:${escapeHtml(row.color || "#f1b84b")}"></span>${escapeHtml(row.name)}</td>
+                      <td>${currency(row.total)}</td>
+                      <td>${byPerson.get(row.name)?.join("<br />") || ""}</td>
+                    </tr>
+                  `,
+                  )
+                  .join("")}
+              </tbody>
+            </table></div>`
+          : `<div class="empty">No data for this selection.</div>`
+      }
+    </div>
+  `;
 }
 
 function renderDuplicateExpenseSection(expenses) {
@@ -576,14 +610,22 @@ function renderOverview() {
       </div>
       <div class="grid two">
         <div class="panel stack">
-          <div class="row between">
+          <div class="row between chart-header">
             <h2>Category chart</h2>
-            <label class="compact-label">Member
-              <select id="category-chart-member">
-                <option value="all" ${state.categoryChartMember === "all" ? "selected" : ""}>All</option>
-                ${(currentTracker()?.members || []).map((member) => `<option value="${member.user_id}" ${String(member.user_id) === state.categoryChartMember ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
-              </select>
-            </label>
+            <div class="chart-controls">
+              <label class="compact-label">Member
+                <select id="category-chart-member">
+                  <option value="all" ${state.categoryChartMember === "all" ? "selected" : ""}>All</option>
+                  ${(currentTracker()?.members || []).map((member) => `<option value="${member.user_id}" ${String(member.user_id) === state.categoryChartMember ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
+                </select>
+              </label>
+              <label class="compact-label">Sort
+                <select id="category-chart-sort">
+                  <option value="amount" ${state.categoryChartSort === "amount" ? "selected" : ""}>Amount</option>
+                  <option value="alpha" ${state.categoryChartSort === "alpha" ? "selected" : ""}>Alphabetical</option>
+                </select>
+              </label>
+            </div>
           </div>
           ${renderBarChartRows(categoryRows)}
         </div>
@@ -1030,6 +1072,16 @@ function bindAppEvents() {
   document.querySelector("#category-chart-member")?.addEventListener("change", (event) => {
     state.categoryChartMember = event.target.value;
     localStorage.setItem("buddy_category_chart_member", state.categoryChartMember);
+    renderApp();
+  });
+  document.querySelector("#category-chart-sort")?.addEventListener("change", (event) => {
+    state.categoryChartSort = event.target.value;
+    localStorage.setItem("buddy_category_chart_sort", state.categoryChartSort);
+    renderApp();
+  });
+  document.querySelector("#category-breakdown-sort")?.addEventListener("change", (event) => {
+    state.categoryBreakdownSort = event.target.value;
+    localStorage.setItem("buddy_category_breakdown_sort", state.categoryBreakdownSort);
     renderApp();
   });
   bindForms();
