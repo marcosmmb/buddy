@@ -39,6 +39,7 @@ from app.services import (
     expense_query,
     get_tracker_for_user,
     is_tracker_owner,
+    member_breakdown_for_expenses,
     monthly_share_overrides,
     monthly_totals_for_year,
     overview_for_expenses,
@@ -684,6 +685,7 @@ def overview(
                 "period_type": "year",
                 "period": str(selected_year),
                 "summary": overview_for_expenses(rows),
+                "member_breakdown": member_breakdown_for_expenses(session, tracker, rows),
                 "monthly_totals": monthly_totals_for_year(session, tracker_id, selected_year),
                 "expenses": [serialize_expense(expense) for expense in rows],
             }
@@ -693,6 +695,7 @@ def overview(
             "period_type": "month",
             "period": period,
             "summary": overview_for_expenses(rows),
+            "member_breakdown": member_breakdown_for_expenses(session, tracker, rows),
             "balance": balance_for_tracker(tracker, rows, share_overrides),
             "monthly_totals": [],
             "expenses": [serialize_expense(expense) for expense in rows],

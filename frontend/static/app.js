@@ -118,7 +118,26 @@ function duplicateExpenses(expenses) {
   return expenses.filter((expense) => duplicates.get(expense.id));
 }
 
-function memberExpenseSummary(expenses = state.expenses) {
+function paidTotalsByMember(expenses = state.expenses) {
+  const rows = new Map();
+  for (const expense of expenses) {
+    const row = rows.get(expense.paid_by_id) || {
+      user_id: expense.paid_by_id,
+      name: expense.paid_by,
+      paid_shared: 0,
+      paid_individual: 0,
+      paid_total: 0,
+    };
+    const amount = Number(expense.amount || 0);
+    if (expense.is_shared) row.paid_shared += amount;
+    else row.paid_individual += amount;
+    row.paid_total += amount;
+    rows.set(expense.paid_by_id, row);
+  }
+  return rows;
+}
+
+function memberResponsibilityTotals(expenses = state.expenses) {
   const rows = new Map();
   const shares = new Map();
   const monthlyShares = state.monthlyShares.shares?.length
@@ -129,7 +148,13 @@ function memberExpenseSummary(expenses = state.expenses) {
         share_percent: member.share_percent,
       }));
   for (const share of monthlyShares) {
-    rows.set(share.user_id, { name: share.name, shared: 0, individual: 0, total: 0 });
+    rows.set(share.user_id, {
+      user_id: share.user_id,
+      name: share.name,
+      responsibility_shared: 0,
+      responsibility_individual: 0,
+      responsibility_total: 0,
+    });
     shares.set(share.user_id, Number(share.share_percent || 0) / 100);
   }
   for (const expense of expenses) {
@@ -139,33 +164,65 @@ function memberExpenseSummary(expenses = state.expenses) {
         const row = rows.get(userId);
         if (!row) continue;
         const allocated = amount * shareRatio;
-        row.shared += allocated;
-        row.total += allocated;
+        row.responsibility_shared += allocated;
+        row.responsibility_total += allocated;
       }
     } else {
-      const row = rows.get(expense.paid_by_id) || { name: expense.paid_by, shared: 0, individual: 0, total: 0 };
-      row.individual += amount;
-      row.total += amount;
+      const row = rows.get(expense.paid_by_id) || {
+        user_id: expense.paid_by_id,
+        name: expense.paid_by,
+        responsibility_shared: 0,
+        responsibility_individual: 0,
+        responsibility_total: 0,
+      };
+      row.responsibility_individual += amount;
+      row.responsibility_total += amount;
       rows.set(expense.paid_by_id, row);
     }
   }
-  return [...rows.values()].filter((row) => row.total !== 0);
+  return rows;
 }
 
-function renderMemberSummaryCards(memberSummary = memberExpenseSummary()) {
+function memberBreakdownFromExpenses(expenses = state.expenses) {
+  const responsibilityRows = memberResponsibilityTotals(expenses);
+  const paidRows = paidTotalsByMember(expenses);
+  const ids = new Set([...responsibilityRows.keys(), ...paidRows.keys()]);
+  return [...ids]
+    .map((userId) => {
+      const responsibility = responsibilityRows.get(userId) || {};
+      const paid = paidRows.get(userId) || {};
+      return {
+        user_id: userId,
+        name: responsibility.name || paid.name || "Unknown",
+        responsibility_shared: responsibility.responsibility_shared || 0,
+        responsibility_individual: responsibility.responsibility_individual || 0,
+        responsibility_total: responsibility.responsibility_total || 0,
+        paid_shared: paid.paid_shared || 0,
+        paid_individual: paid.paid_individual || 0,
+        paid_total: paid.paid_total || 0,
+      };
+    })
+    .filter((row) => row.responsibility_total || row.paid_total)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderMemberBreakdown(rows, emptyText = "No expenses for this selection.") {
   const tracker = currentTracker();
-  if (!memberSummary.length) return `<div class="empty" style="grid-column: 1 / -1">No expenses for this month.</div>`;
-  return memberSummary
-    .map(
-      (row) => `
-      <div class="card metric member-total-card">
-        <span class="muted">${escapeHtml(row.name)}</span>
-        <span class="metric-value">${currency(row.total, tracker.default_currency)}</span>
-        <span class="tiny-line">Shared ${currency(row.shared, tracker.default_currency)} · Individual ${currency(row.individual, tracker.default_currency)}</span>
-      </div>
-    `,
-    )
-    .join("");
+  return renderTable(
+    "Member breakdown",
+    ["Member", "Total expenses", "Shared expenses", "Individual expenses", "Paid total", "Paid shared", "Paid individual"],
+    (rows || []).map((row) => [
+      escapeHtml(row.name),
+      currency(row.responsibility_total, tracker.default_currency),
+      currency(row.responsibility_shared, tracker.default_currency),
+      currency(row.responsibility_individual, tracker.default_currency),
+      currency(row.paid_total, tracker.default_currency),
+      currency(row.paid_shared, tracker.default_currency),
+      currency(row.paid_individual, tracker.default_currency),
+    ]),
+    true,
+    emptyText,
+  );
 }
 
 function categoryRowsForSelectedMember(summary) {
@@ -515,7 +572,7 @@ function renderOverview() {
       ${state.periodType === "year" ? renderBarChart("Monthly chart", state.overview?.monthly_totals || [], "month", "total") : ""}
       ${state.periodType === "year" ? renderTable("Total by month", ["Month", "Total"], state.overview?.monthly_totals?.map((row) => [row.month, currency(row.total)]) || []) : ""}
       ${state.periodType === "month" ? renderMonthlySettlements() : ""}
-      ${renderTable("Total paid by person", ["Person", "Shared", "Individual", "Total"], data.by_person?.map((row) => [row.name, currency(row.shared), currency(row.individual), currency(row.total)]) || [])}
+      ${renderMemberBreakdown(state.overview?.member_breakdown || [])}
       ${renderCategoryBreakdownTable(data)}
       ${state.periodType === "month" ? `<div class="panel stack"><h2>Expenses this month</h2>${renderExpenseTable(state.overview?.expenses || [])}</div>` : ""}
     </section>
@@ -524,7 +581,6 @@ function renderOverview() {
 
 function renderExpenses() {
   const tracker = currentTracker();
-  const memberSummary = memberExpenseSummary();
   return `
     <section class="stack">
       <div class="toolbar">
@@ -559,8 +615,8 @@ function renderExpenses() {
             : `<div class="empty">Only tracker owners can manage monthly shares.</div>`
         }
       </div>
-      <div class="grid three" id="member-month-summary">
-        ${renderMemberSummaryCards(memberSummary)}
+      <div id="member-month-breakdown">
+        ${renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.")}
       </div>
       <div class="grid two">
       <div class="panel stack">
@@ -872,7 +928,7 @@ function renderCreateTracker() {
   `;
 }
 
-function renderTable(title, headers, rows, raw = false) {
+function renderTable(title, headers, rows, raw = false, emptyText = "No data for this selection.") {
   return `
     <div class="panel stack">
       <h2>${escapeHtml(title)}</h2>
@@ -882,7 +938,7 @@ function renderTable(title, headers, rows, raw = false) {
                 <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
                 <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${raw ? cell : escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
               </table></div>`
-          : `<div class="empty">No data for this selection.</div>`
+          : `<div class="empty">${escapeHtml(emptyText)}</div>`
       }
     </div>
   `;
@@ -1100,8 +1156,8 @@ function scheduleExpenseAutosave(expenseId) {
         if (total) total.textContent = currency(monthTotal(), tracker.default_currency);
         const sharedTotal = document.querySelector("#expense-month-shared-total");
         if (sharedTotal) sharedTotal.textContent = currency(monthSharedTotal(), tracker.default_currency);
-        const memberSummary = document.querySelector("#member-month-summary");
-        if (memberSummary) memberSummary.innerHTML = renderMemberSummaryCards();
+        const memberBreakdown = document.querySelector("#member-month-breakdown");
+        if (memberBreakdown) memberBreakdown.innerHTML = renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.");
         setAutosaveStatus(expenseId, "Saved", "positive");
       } catch (error) {
         state.error = error.message;

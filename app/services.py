@@ -133,7 +133,7 @@ def overview_for_expenses(expenses: list[Expense]) -> dict[str, Any]:
     by_person_category: dict[str, dict[str, Money]] = defaultdict(lambda: defaultdict(lambda: money("0")))
 
     for expense in expenses:
-        amount = money(expense.amount)
+        amount = Decimal(expense.amount)
         total += amount
         by_category[expense.category.name] += amount
         person_totals = by_person[expense.paid_by.name]
@@ -155,6 +155,71 @@ def overview_for_expenses(expenses: list[Expense]) -> dict[str, Any]:
             for category, value in sorted(categories.items())
         ],
     }
+
+
+def member_breakdown_for_expenses(session: Session, tracker: Tracker, expenses: list[Expense]) -> list[dict[str, Any]]:
+    rows: dict[int, dict[str, Any]] = {
+        member.user_id: {
+            "user_id": member.user_id,
+            "name": member.user.name,
+            "responsibility_shared": Decimal("0"),
+            "responsibility_individual": Decimal("0"),
+            "responsibility_total": Decimal("0"),
+            "paid_shared": Decimal("0"),
+            "paid_individual": Decimal("0"),
+            "paid_total": Decimal("0"),
+        }
+        for member in tracker.members
+    }
+    shared_by_month: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+
+    for expense in expenses:
+        amount = Decimal(expense.amount)
+        row = rows.setdefault(
+            expense.paid_by_id,
+            {
+                "user_id": expense.paid_by_id,
+                "name": expense.paid_by.name,
+                "responsibility_shared": Decimal("0"),
+                "responsibility_individual": Decimal("0"),
+                "responsibility_total": Decimal("0"),
+                "paid_shared": Decimal("0"),
+                "paid_individual": Decimal("0"),
+                "paid_total": Decimal("0"),
+            },
+        )
+        row["paid_total"] += amount
+        if expense.is_shared:
+            row["paid_shared"] += amount
+            shared_by_month[expense.date.strftime("%Y-%m")] += amount
+        else:
+            row["paid_individual"] += amount
+            row["responsibility_individual"] += amount
+
+    for month, shared_total in shared_by_month.items():
+        shares = normalized_shares(tracker.members, monthly_share_overrides(session, tracker.id, month))
+        for user_id, share_ratio in shares.items():
+            if user_id in rows:
+                rows[user_id]["responsibility_shared"] += shared_total * share_ratio
+
+    result = []
+    for row in rows.values():
+        row["responsibility_total"] = row["responsibility_shared"] + row["responsibility_individual"]
+        if not row["responsibility_total"] and not row["paid_total"]:
+            continue
+        result.append(
+            {
+                "user_id": row["user_id"],
+                "name": row["name"],
+                "responsibility_shared": float(row["responsibility_shared"]),
+                "responsibility_individual": float(row["responsibility_individual"]),
+                "responsibility_total": float(row["responsibility_total"]),
+                "paid_shared": float(row["paid_shared"]),
+                "paid_individual": float(row["paid_individual"]),
+                "paid_total": float(row["paid_total"]),
+            }
+        )
+    return sorted(result, key=lambda item: item["name"])
 
 
 def normalized_shares(members: list[TrackerMember], overrides: dict[int, Decimal] | None = None) -> dict[int, Decimal]:
@@ -185,15 +250,15 @@ def monthly_share_overrides(session: Session, tracker_id: int, month: str) -> di
 def balance_for_tracker(tracker: Tracker, expenses: list[Expense], share_overrides: dict[int, Decimal] | None = None) -> dict[str, Any]:
     shares = normalized_shares(tracker.members, share_overrides)
     shared_expenses = [expense for expense in expenses if expense.is_shared]
-    shared_total = sum((money(expense.amount) for expense in shared_expenses), money("0"))
+    shared_total = sum((Decimal(expense.amount) for expense in shared_expenses), money("0"))
     paid_shared: dict[int, Money] = defaultdict(lambda: money("0"))
     paid_individual: dict[int, Money] = defaultdict(lambda: money("0"))
 
     for expense in expenses:
         if expense.is_shared:
-            paid_shared[expense.paid_by_id] += money(expense.amount)
+            paid_shared[expense.paid_by_id] += Decimal(expense.amount)
         else:
-            paid_individual[expense.paid_by_id] += money(expense.amount)
+            paid_individual[expense.paid_by_id] += Decimal(expense.amount)
 
     rows = []
     net_by_user: dict[int, Money] = {}

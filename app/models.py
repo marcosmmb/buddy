@@ -109,7 +109,7 @@ class Expense(Base):
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"))
     paid_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     date: Mapped[date] = mapped_column(Date, index=True)
-    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     currency: Mapped[str] = mapped_column(String(3))
     description: Mapped[str] = mapped_column(Text, default="")
     is_shared: Mapped[bool] = mapped_column(Boolean, default=True)
