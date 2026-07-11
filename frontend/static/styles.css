@@ -222,19 +222,51 @@ h3 {
 
 .auth-hero {
   background:
-    linear-gradient(rgba(22, 32, 42, 0.52), rgba(22, 32, 42, 0.72)),
-    url("https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&w=1800&q=80");
+    linear-gradient(rgba(22, 32, 42, 0.28), rgba(22, 32, 42, 0.62)),
+    url("/static/buddy-login-bg.png");
   background-size: cover;
   background-position: center;
   color: #fff;
   padding: clamp(28px, 6vw, 72px);
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: clamp(20px, 4vw, 42px);
 }
 
 .auth-hero h1 {
   max-width: 720px;
+}
+
+.auth-brand-cluster {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: clamp(8px, 2vw, 18px);
+  min-height: min(64vh, 620px);
+}
+
+.auth-brand {
+  font-size: clamp(40px, 7vw, 76px);
+  gap: clamp(14px, 2.4vw, 24px);
+  justify-content: center;
+  text-shadow: 0 18px 34px rgba(0, 0, 0, 0.28);
+}
+
+.auth-mark {
+  width: clamp(64px, 9vw, 104px);
+  height: clamp(64px, 9vw, 104px);
+  border-radius: 18px;
+  font-size: 0.9em;
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.22);
+}
+
+.auth-mascot {
+  width: min(430px, 66vw);
+  max-height: 46vh;
+  object-fit: contain;
+  align-self: center;
+  filter: drop-shadow(0 28px 34px rgba(0, 0, 0, 0.26));
 }
 
 .auth-panel {
@@ -407,6 +439,33 @@ textarea {
   padding: 9px 11px;
   background: #fff;
   color: var(--ink);
+}
+
+.password-field {
+  position: relative;
+  display: block;
+}
+
+.password-field input {
+  padding-right: 78px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  min-width: 62px;
+  min-height: 30px;
+  border-radius: 6px;
+  transform: translateY(-50%);
+  background: #eef1f5;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+body[data-theme="dark"] .password-toggle {
+  background: #243244;
 }
 
 body[data-theme="dark"] input,

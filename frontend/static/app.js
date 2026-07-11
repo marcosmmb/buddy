@@ -304,7 +304,10 @@ function renderAuth() {
   app.innerHTML = `
     <main class="auth-page">
       <section class="auth-hero">
-        <div class="brand"><span class="mark">B</span><span>Buddy</span></div>
+        <div class="auth-brand-cluster">
+          <div class="brand auth-brand"><span class="mark auth-mark">B</span><span>Buddy</span></div>
+          <img class="auth-mascot" src="/static/buddy-mascot-bee.png" alt="Buddy bee mascot" />
+        </div>
         <h1>Budgets, shared costs, and payback math in one self-hosted place.</h1>
       </section>
       <section class="auth-panel">
@@ -313,7 +316,12 @@ function renderAuth() {
           ${renderError()}
           <form id="login-form" class="stack">
             <label>Email<input name="email" type="email" required value="admin@buddy.local" /></label>
-            <label>Password<input name="password" type="password" required value="change-me-now" /></label>
+            <label>Password
+              <span class="password-field">
+                <input id="login-password" name="password" type="password" required value="change-me-now" />
+                <button class="password-toggle" id="toggle-login-password" type="button" aria-label="Show password">Show</button>
+              </span>
+            </label>
             <button class="button primary" type="submit">Sign in</button>
           </form>
         </div>
@@ -321,6 +329,14 @@ function renderAuth() {
     </main>
   `;
   document.querySelector("#login-form").addEventListener("submit", submitLogin);
+  document.querySelector("#toggle-login-password")?.addEventListener("click", () => {
+    const input = document.querySelector("#login-password");
+    const button = document.querySelector("#toggle-login-password");
+    const isHidden = input.type === "password";
+    input.type = isHidden ? "text" : "password";
+    button.textContent = isHidden ? "Hide" : "Show";
+    button.setAttribute("aria-label", isHidden ? "Hide password" : "Show password");
+  });
   document.querySelector("#close-error")?.addEventListener("click", () => {
     state.error = "";
     renderAuth();
