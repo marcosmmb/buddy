@@ -81,6 +81,10 @@ class ExpenseCreatePayload(BaseModel):
         return value.strip().upper()[:3]
 
 
+class ExpenseBulkDeletePayload(BaseModel):
+    expense_ids: list[int]
+
+
 class CsvImportConfigPayload(BaseModel):
     name: str
     field_map: dict[str, str | None] = Field(default_factory=dict)
@@ -88,9 +92,13 @@ class CsvImportConfigPayload(BaseModel):
     currency: str = "USD"
 
 
-class CsvImportPayload(BaseModel):
+class CsvPreviewPayload(BaseModel):
     config_id: int
     csv_text: str
     fallback_category_id: int
     fallback_paid_by_id: int
-    is_shared: bool = True
+    is_shared: bool = False
+
+
+class CsvImportPayload(BaseModel):
+    expenses: list[ExpenseCreatePayload]

@@ -51,13 +51,18 @@ def main() -> None:
         tracker_id = tracker["id"]
         admin_id = next(member["user_id"] for member in tracker["members"] if member["email"] == "admin@buddy.local")
 
+        categories_response = client.get(f"/api/trackers/{tracker_id}/categories", headers=headers)
+        categories_response.raise_for_status()
+        seeded_categories = categories_response.json()
+        assert len(seeded_categories) >= 5
+        category_id = seeded_categories[0]["id"]
+
         category_response = client.post(
             f"/api/trackers/{tracker_id}/categories",
             headers=headers,
-            json={"name": "Groceries", "color": "#166d5b"},
+            json={"name": "Pets", "color": "#166d5b"},
         )
         category_response.raise_for_status()
-        category_id = category_response.json()["id"]
 
         expense_response = client.post(
             f"/api/trackers/{tracker_id}/expenses",
@@ -73,6 +78,23 @@ def main() -> None:
             },
         )
         expense_response.raise_for_status()
+        expense_id = expense_response.json()["id"]
+
+        update_response = client.put(
+            f"/api/trackers/{tracker_id}/expenses/{expense_id}",
+            headers=headers,
+            json={
+                "date": "2026-07-10",
+                "category_id": category_id,
+                "amount": "121.25",
+                "currency": "USD",
+                "paid_by_id": admin_id,
+                "description": "Market run updated",
+                "is_shared": False,
+            },
+        )
+        update_response.raise_for_status()
+        assert update_response.json()["amount"] == 121.25
 
         bad_share_response = client.put(
             f"/api/trackers/{tracker_id}/members",
@@ -99,19 +121,64 @@ def main() -> None:
         config_response.raise_for_status()
         config_id = config_response.json()["id"]
 
-        import_response = client.post(
-            f"/api/trackers/{tracker_id}/csv-imports",
+        preview_response = client.post(
+            f"/api/trackers/{tracker_id}/csv-imports/preview",
             headers=headers,
             json={
                 "config_id": config_id,
                 "csv_text": 'Date,Description,Amount\n"2026-07-11","Coffee","5.25"\n',
                 "fallback_category_id": category_id,
                 "fallback_paid_by_id": admin_id,
-                "is_shared": True,
+            },
+        )
+        preview_response.raise_for_status()
+        preview = preview_response.json()
+        assert preview["rows"][0]["is_shared"] is False
+
+        import_response = client.post(
+            f"/api/trackers/{tracker_id}/csv-imports",
+            headers=headers,
+            json={
+                "expenses": [
+                    {
+                        "date": preview["rows"][0]["date"],
+                        "category_id": preview["rows"][0]["category_id"],
+                        "amount": str(preview["rows"][0]["amount"]),
+                        "currency": preview["rows"][0]["currency"],
+                        "paid_by_id": preview["rows"][0]["paid_by_id"],
+                        "description": preview["rows"][0]["description"],
+                        "is_shared": preview["rows"][0]["is_shared"],
+                    }
+                ]
             },
         )
         import_response.raise_for_status()
         assert import_response.json()["imported"] == 1
+
+        delete_response = client.delete(f"/api/trackers/{tracker_id}/expenses/{expense_id}", headers=headers)
+        delete_response.raise_for_status()
+
+        extra_expense_response = client.post(
+            f"/api/trackers/{tracker_id}/expenses",
+            headers=headers,
+            json={
+                "date": "2026-07-12",
+                "category_id": category_id,
+                "amount": "9.00",
+                "currency": "USD",
+                "paid_by_id": admin_id,
+                "description": "Bulk delete me",
+                "is_shared": False,
+            },
+        )
+        extra_expense_response.raise_for_status()
+        bulk_response = client.post(
+            f"/api/trackers/{tracker_id}/expenses/bulk-delete",
+            headers=headers,
+            json={"expense_ids": [extra_expense_response.json()["id"]]},
+        )
+        bulk_response.raise_for_status()
+        assert bulk_response.json()["deleted"] == 1
 
         for path in (
             f"/api/trackers/{tracker_id}/period-options",

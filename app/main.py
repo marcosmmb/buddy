@@ -22,6 +22,8 @@ from app.schemas import (
     CategoryCreatePayload,
     CsvImportConfigPayload,
     CsvImportPayload,
+    CsvPreviewPayload,
+    ExpenseBulkDeletePayload,
     ExpenseCreatePayload,
     LoginPayload,
     MemberUpdatePayload,
@@ -47,6 +49,18 @@ from app.services import (
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+STARTER_CATEGORIES = [
+    ("Groceries", "#166d5b"),
+    ("Restaurants", "#b45309"),
+    ("Transportation", "#285c9d"),
+    ("Housing", "#7c3aed"),
+    ("Utilities", "#0f766e"),
+    ("Entertainment", "#be123c"),
+    ("Health", "#047857"),
+    ("Travel", "#0369a1"),
+    ("Shopping", "#9333ea"),
+    ("Other", "#6b7280"),
+]
 
 
 def require_user(request: Request) -> User:
@@ -103,6 +117,83 @@ def parse_amount(value: str, invert: bool) -> Decimal:
     cleaned = clean_cell(value).replace("$", "").replace(",", "")
     amount = Decimal(cleaned)
     return -amount if invert else amount
+
+
+def load_tracker_member_context(session: Any, tracker_id: int, user: User) -> Tracker:
+    tracker = get_tracker_for_user(session, tracker_id, user)
+    if tracker is None:
+        raise HTTPException(status_code=404, detail="Tracker not found")
+    return tracker
+
+
+def validate_expense_payload(session: Any, tracker: Tracker, tracker_id: int, data: ExpenseCreatePayload) -> None:
+    member_ids = {member.user_id for member in tracker.members}
+    if data.paid_by_id not in member_ids:
+        raise HTTPException(status_code=400, detail="Payer must be a tracker member")
+    category = session.get(Category, data.category_id)
+    if category is None or category.tracker_id != tracker_id:
+        raise HTTPException(status_code=400, detail="Category must belong to the tracker")
+
+
+def build_csv_preview_rows(
+    session: Any,
+    tracker: Tracker,
+    tracker_id: int,
+    config: CsvImportConfig,
+    data: CsvPreviewPayload,
+) -> dict[str, Any]:
+    fallback_category = session.get(Category, data.fallback_category_id)
+    if fallback_category is None or fallback_category.tracker_id != tracker_id:
+        raise HTTPException(status_code=400, detail="Fallback category must belong to the tracker")
+    member_ids = {member.user_id for member in tracker.members}
+    if data.fallback_paid_by_id not in member_ids:
+        raise HTTPException(status_code=400, detail="Fallback payer must be a tracker member")
+
+    reader = csv.DictReader(StringIO(data.csv_text.lstrip("\ufeff")))
+    reader.fieldnames = [clean_cell(name).lstrip("\ufeff") for name in (reader.fieldnames or [])]
+    category_by_name = {category.name.lower(): category for category in session.query(Category).filter(Category.tracker_id == tracker_id).all()}
+    user_by_key = {}
+    name_by_user = {}
+    for member in tracker.members:
+        user_by_key[member.user.name.lower()] = member.user_id
+        user_by_key[member.user.email.lower()] = member.user_id
+        name_by_user[member.user_id] = member.user.name
+
+    rows = []
+    skipped: list[dict[str, Any]] = []
+    field_map = config.field_map or {}
+    for index, row in enumerate(reader, start=2):
+        cleaned_row = {clean_cell(key).lstrip("\ufeff"): clean_cell(value) for key, value in row.items()}
+        try:
+            if not field_map.get("date") or not field_map.get("amount"):
+                raise ValueError("CSV config must map date and amount")
+            expense_date = parse_csv_date(cleaned_row.get(field_map["date"], ""))
+            amount = parse_amount(cleaned_row.get(field_map["amount"], ""), config.invert_amount)
+            description = cleaned_row.get(field_map.get("description", ""), "")
+            category = fallback_category
+            if field_map.get("category"):
+                category_name = cleaned_row.get(field_map["category"], "").lower()
+                category = category_by_name.get(category_name, fallback_category)
+            paid_by_id = data.fallback_paid_by_id
+            if field_map.get("paid_by"):
+                paid_by_id = user_by_key.get(cleaned_row.get(field_map["paid_by"], "").lower(), data.fallback_paid_by_id)
+            rows.append(
+                {
+                    "row_number": index,
+                    "date": expense_date.isoformat(),
+                    "category_id": category.id,
+                    "category": category.name,
+                    "paid_by_id": paid_by_id,
+                    "paid_by": name_by_user.get(paid_by_id, ""),
+                    "amount": float(amount),
+                    "currency": config.currency,
+                    "description": description,
+                    "is_shared": data.is_shared,
+                }
+            )
+        except Exception as exc:
+            skipped.append({"row": index, "reason": str(exc)})
+    return {"rows": rows, "skipped": skipped}
 
 
 @get("/")
@@ -264,6 +355,8 @@ def create_tracker(request: Request, data: Annotated[TrackerCreatePayload, Body(
                     share_percent=share,
                 )
             )
+        for name, color in STARTER_CATEGORIES:
+            session.add(Category(tracker_id=tracker.id, name=name, color=color))
         session.flush()
         tracker = (
             session.query(Tracker)
@@ -377,15 +470,8 @@ def expenses(request: Request, tracker_id: int, month: str | None = None, year: 
 def create_expense(request: Request, tracker_id: int, data: Annotated[ExpenseCreatePayload, Body()]) -> dict[str, Any]:
     user = require_user(request)
     with db_session() as session:
-        tracker = get_tracker_for_user(session, tracker_id, user)
-        if tracker is None:
-            raise HTTPException(status_code=404, detail="Tracker not found")
-        member_ids = {member.user_id for member in tracker.members}
-        if data.paid_by_id not in member_ids:
-            raise HTTPException(status_code=400, detail="Payer must be a tracker member")
-        category = session.get(Category, data.category_id)
-        if category is None or category.tracker_id != tracker_id:
-            raise HTTPException(status_code=400, detail="Category must belong to the tracker")
+        tracker = load_tracker_member_context(session, tracker_id, user)
+        validate_expense_payload(session, tracker, tracker_id, data)
         expense = Expense(
             tracker_id=tracker_id,
             category_id=data.category_id,
@@ -405,6 +491,60 @@ def create_expense(request: Request, tracker_id: int, data: Annotated[ExpenseCre
             .one()
         )
         return serialize_expense(expense)
+
+
+@put("/api/trackers/{tracker_id:int}/expenses/{expense_id:int}")
+def update_expense(request: Request, tracker_id: int, expense_id: int, data: Annotated[ExpenseCreatePayload, Body()]) -> dict[str, Any]:
+    user = require_user(request)
+    with db_session() as session:
+        tracker = load_tracker_member_context(session, tracker_id, user)
+        validate_expense_payload(session, tracker, tracker_id, data)
+        expense = session.query(Expense).filter(Expense.id == expense_id, Expense.tracker_id == tracker_id).one_or_none()
+        if expense is None:
+            raise HTTPException(status_code=404, detail="Expense not found")
+        expense.category_id = data.category_id
+        expense.paid_by_id = data.paid_by_id
+        expense.date = data.date
+        expense.amount = data.amount
+        expense.currency = normalize_currency(data.currency)
+        expense.description = data.description.strip()
+        expense.is_shared = data.is_shared
+        session.flush()
+        expense = (
+            session.query(Expense)
+            .options(joinedload(Expense.category), joinedload(Expense.paid_by))
+            .filter(Expense.id == expense.id)
+            .one()
+        )
+        return serialize_expense(expense)
+
+
+@delete("/api/trackers/{tracker_id:int}/expenses/{expense_id:int}", status_code=200)
+def delete_expense(request: Request, tracker_id: int, expense_id: int) -> dict[str, str]:
+    user = require_user(request)
+    with db_session() as session:
+        if get_tracker_for_user(session, tracker_id, user) is None:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        deleted = session.query(Expense).filter(Expense.id == expense_id, Expense.tracker_id == tracker_id).delete()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Expense not found")
+    return {"status": "ok"}
+
+
+@post("/api/trackers/{tracker_id:int}/expenses/bulk-delete", status_code=200)
+def bulk_delete_expenses(request: Request, tracker_id: int, data: Annotated[ExpenseBulkDeletePayload, Body()]) -> dict[str, Any]:
+    user = require_user(request)
+    with db_session() as session:
+        if get_tracker_for_user(session, tracker_id, user) is None:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        if not data.expense_ids:
+            return {"deleted": 0}
+        deleted = (
+            session.query(Expense)
+            .filter(Expense.tracker_id == tracker_id, Expense.id.in_(data.expense_ids))
+            .delete(synchronize_session=False)
+        )
+    return {"deleted": deleted}
 
 
 @get("/api/trackers/{tracker_id:int}/period-options")
@@ -503,59 +643,37 @@ def delete_csv_config(request: Request, tracker_id: int, config_id: int) -> dict
     return {"status": "ok"}
 
 
+@post("/api/trackers/{tracker_id:int}/csv-imports/preview", status_code=200)
+def preview_csv_import(request: Request, tracker_id: int, data: Annotated[CsvPreviewPayload, Body()]) -> dict[str, Any]:
+    user = require_user(request)
+    with db_session() as session:
+        tracker = load_tracker_member_context(session, tracker_id, user)
+        config = session.get(CsvImportConfig, data.config_id)
+        if config is None or config.tracker_id != tracker_id:
+            raise HTTPException(status_code=404, detail="CSV config not found")
+        return build_csv_preview_rows(session, tracker, tracker_id, config, data)
+
+
 @post("/api/trackers/{tracker_id:int}/csv-imports")
 def import_csv(request: Request, tracker_id: int, data: Annotated[CsvImportPayload, Body()]) -> dict[str, Any]:
     user = require_user(request)
     with db_session() as session:
-        tracker = get_tracker_for_user(session, tracker_id, user)
-        if tracker is None:
-            raise HTTPException(status_code=404, detail="Tracker not found")
-        config = session.get(CsvImportConfig, data.config_id)
-        if config is None or config.tracker_id != tracker_id:
-            raise HTTPException(status_code=404, detail="CSV config not found")
-        fallback_category = session.get(Category, data.fallback_category_id)
-        if fallback_category is None or fallback_category.tracker_id != tracker_id:
-            raise HTTPException(status_code=400, detail="Fallback category must belong to the tracker")
-        member_ids = {member.user_id for member in tracker.members}
-        if data.fallback_paid_by_id not in member_ids:
-            raise HTTPException(status_code=400, detail="Fallback payer must be a tracker member")
-
-        reader = csv.DictReader(StringIO(data.csv_text.lstrip("\ufeff")))
-        reader.fieldnames = [clean_cell(name).lstrip("\ufeff") for name in (reader.fieldnames or [])]
-        category_by_name = {category.name.lower(): category for category in session.query(Category).filter(Category.tracker_id == tracker_id).all()}
-        user_by_key = {}
-        for member in tracker.members:
-            user_by_key[member.user.name.lower()] = member.user_id
-            user_by_key[member.user.email.lower()] = member.user_id
-
+        tracker = load_tracker_member_context(session, tracker_id, user)
         imported = 0
         skipped: list[dict[str, Any]] = []
-        field_map = config.field_map or {}
-        for index, row in enumerate(reader, start=2):
-            cleaned_row = {clean_cell(key).lstrip("\ufeff"): clean_cell(value) for key, value in row.items()}
+        for index, row in enumerate(data.expenses, start=1):
             try:
-                if not field_map.get("date") or not field_map.get("amount"):
-                    raise ValueError("CSV config must map date and amount")
-                expense_date = parse_csv_date(cleaned_row.get(field_map["date"], ""))
-                amount = parse_amount(cleaned_row.get(field_map["amount"], ""), config.invert_amount)
-                description = cleaned_row.get(field_map.get("description", ""), "")
-                category_id = data.fallback_category_id
-                if field_map.get("category"):
-                    category_name = cleaned_row.get(field_map["category"], "").lower()
-                    category_id = category_by_name.get(category_name, fallback_category).id
-                paid_by_id = data.fallback_paid_by_id
-                if field_map.get("paid_by"):
-                    paid_by_id = user_by_key.get(cleaned_row.get(field_map["paid_by"], "").lower(), data.fallback_paid_by_id)
+                validate_expense_payload(session, tracker, tracker_id, row)
                 session.add(
                     Expense(
                         tracker_id=tracker_id,
-                        category_id=category_id,
-                        paid_by_id=paid_by_id,
-                        date=expense_date,
-                        amount=amount,
-                        currency=config.currency,
-                        description=description,
-                        is_shared=data.is_shared,
+                        category_id=row.category_id,
+                        paid_by_id=row.paid_by_id,
+                        date=row.date,
+                        amount=row.amount,
+                        currency=normalize_currency(row.currency),
+                        description=row.description.strip(),
+                        is_shared=row.is_shared,
                     )
                 )
                 imported += 1
@@ -584,11 +702,15 @@ app = Litestar(
         delete_category,
         expenses,
         create_expense,
+        update_expense,
+        delete_expense,
+        bulk_delete_expenses,
         tracker_period_options,
         overview,
         csv_configs,
         create_csv_config,
         delete_csv_config,
+        preview_csv_import,
         import_csv,
     ],
     on_startup=[init_database],
