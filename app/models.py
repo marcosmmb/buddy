@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -23,7 +23,9 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(255))
     default_currency: Mapped[str] = mapped_column(String(3), default="USD")
+    theme: Mapped[str] = mapped_column(String(12), default="light")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     memberships: Mapped[list[TrackerMember]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -53,6 +55,7 @@ class Tracker(Base):
     members: Mapped[list[TrackerMember]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
     categories: Mapped[list[Category]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
     expenses: Mapped[list[Expense]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
+    csv_configs: Mapped[list[CsvImportConfig]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
 
 
 class TrackerMember(Base):
@@ -99,3 +102,20 @@ class Expense(Base):
     tracker: Mapped[Tracker] = relationship(back_populates="expenses")
     category: Mapped[Category] = relationship(back_populates="expenses")
     paid_by: Mapped[User] = relationship()
+
+
+class CsvImportConfig(Base):
+    __tablename__ = "csv_import_configs"
+    __table_args__ = (UniqueConstraint("tracker_id", "name", name="uq_tracker_csv_config"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tracker_id: Mapped[int] = mapped_column(ForeignKey("trackers.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(120))
+    field_map: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    invert_amount: Mapped[bool] = mapped_column(Boolean, default=False)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    tracker: Mapped[Tracker] = relationship(back_populates="csv_configs")
+    created_by: Mapped[User] = relationship()

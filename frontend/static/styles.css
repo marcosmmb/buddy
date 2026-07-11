@@ -13,6 +13,20 @@
   --shadow: 0 16px 40px rgba(28, 43, 68, 0.08);
 }
 
+body[data-theme="dark"] {
+  --ink: #edf2f7;
+  --muted: #aab4c0;
+  --line: #344253;
+  --paper: #101820;
+  --panel: #172231;
+  --accent: #38a58d;
+  --accent-strong: #49b99f;
+  --blue: #72a7e8;
+  --red: #ff7d88;
+  --yellow: #f4c45d;
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -327,6 +341,13 @@ textarea {
   color: var(--ink);
 }
 
+body[data-theme="dark"] input,
+body[data-theme="dark"] select,
+body[data-theme="dark"] textarea {
+  background: #101820;
+  color: var(--ink);
+}
+
 textarea {
   resize: vertical;
   min-height: 78px;
@@ -391,6 +412,17 @@ th {
   font-weight: 800;
 }
 
+body[data-theme="dark"] .pill,
+body[data-theme="dark"] .button {
+  background: #243244;
+  color: var(--ink);
+}
+
+body[data-theme="dark"] .button.primary {
+  background: var(--accent);
+  color: #0c151c;
+}
+
 .swatch {
   width: 12px;
   height: 12px;
@@ -418,6 +450,10 @@ th {
   border-radius: 8px;
   background: #fff;
   padding: 24px;
+}
+
+body[data-theme="dark"] .empty {
+  background: #121c27;
 }
 
 @media (max-width: 900px) {

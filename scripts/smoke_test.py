@@ -29,7 +29,8 @@ def main() -> None:
         headers = {"authorization": f"Bearer {token}"}
 
         user_response = client.post(
-            "/api/auth/register",
+            "/api/admin/users",
+            headers=headers,
             json={
                 "name": "Sam",
                 "email": "sam@example.test",
@@ -38,7 +39,7 @@ def main() -> None:
             },
         )
         user_response.raise_for_status()
-        sam_id = user_response.json()["user"]["id"]
+        sam_id = user_response.json()["id"]
 
         tracker_response = client.post(
             "/api/trackers",
@@ -73,10 +74,49 @@ def main() -> None:
         )
         expense_response.raise_for_status()
 
+        bad_share_response = client.put(
+            f"/api/trackers/{tracker_id}/members",
+            headers=headers,
+            json={
+                "members": [
+                    {"user_id": admin_id, "role": "owner", "share_percent": 80},
+                    {"user_id": sam_id, "role": "member", "share_percent": 40},
+                ]
+            },
+        )
+        assert bad_share_response.status_code == 400
+
+        config_response = client.post(
+            f"/api/trackers/{tracker_id}/csv-configs",
+            headers=headers,
+            json={
+                "name": "Sample bank",
+                "field_map": {"date": "Date", "description": "Description", "amount": "Amount"},
+                "invert_amount": False,
+                "currency": "USD",
+            },
+        )
+        config_response.raise_for_status()
+        config_id = config_response.json()["id"]
+
+        import_response = client.post(
+            f"/api/trackers/{tracker_id}/csv-imports",
+            headers=headers,
+            json={
+                "config_id": config_id,
+                "csv_text": 'Date,Description,Amount\n"2026-07-11","Coffee","5.25"\n',
+                "fallback_category_id": category_id,
+                "fallback_paid_by_id": admin_id,
+                "is_shared": True,
+            },
+        )
+        import_response.raise_for_status()
+        assert import_response.json()["imported"] == 1
+
         for path in (
-            f"/api/trackers/{tracker_id}/overview?month=2026-07",
-            f"/api/trackers/{tracker_id}/balance?month=2026-07",
-            f"/api/trackers/{tracker_id}/ytd?year=2026",
+            f"/api/trackers/{tracker_id}/period-options",
+            f"/api/trackers/{tracker_id}/overview?period_type=month&period=2026-07",
+            f"/api/trackers/{tracker_id}/overview?period_type=year&period=2026",
         ):
             response = client.get(path, headers=headers)
             response.raise_for_status()

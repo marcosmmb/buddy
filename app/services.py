@@ -5,14 +5,15 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
-from sqlalchemy import and_, extract
+from sqlalchemy import and_, extract, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import Category, Expense, Tracker, TrackerMember, User
+from app.models import Category, CsvImportConfig, Expense, Tracker, TrackerMember, User
 
 
 Money = Decimal
 CENT = Decimal("0.01")
+SUPPORTED_CURRENCIES = ["USD", "CAD", "EUR", "GBP", "MXN", "BRL", "ARS", "CLP", "AUD", "JPY"]
 
 
 def money(value: Decimal | int | float | str) -> Money:
@@ -25,7 +26,9 @@ def serialize_user(user: User) -> dict[str, Any]:
         "email": user.email,
         "name": user.name,
         "default_currency": user.default_currency,
+        "theme": user.theme,
         "is_admin": user.is_admin,
+        "is_active": user.is_active,
     }
 
 
@@ -35,6 +38,7 @@ def serialize_tracker(tracker: Tracker) -> dict[str, Any]:
         "name": tracker.name,
         "default_currency": tracker.default_currency,
         "members": [serialize_member(member) for member in tracker.members],
+        "owners": [member.user_id for member in tracker.members if member.role == "owner"],
     }
 
 
@@ -73,6 +77,21 @@ def serialize_expense(expense: Expense) -> dict[str, Any]:
         "description": expense.description,
         "is_shared": expense.is_shared,
     }
+
+
+def serialize_csv_config(config: CsvImportConfig) -> dict[str, Any]:
+    return {
+        "id": config.id,
+        "tracker_id": config.tracker_id,
+        "name": config.name,
+        "field_map": config.field_map or {},
+        "invert_amount": config.invert_amount,
+        "currency": config.currency,
+    }
+
+
+def is_tracker_owner(tracker: Tracker, user: User) -> bool:
+    return user.is_admin or any(member.user_id == user.id and member.role == "owner" for member in tracker.members)
 
 
 def get_tracker_for_user(session: Session, tracker_id: int, user: User) -> Tracker | None:
@@ -142,7 +161,7 @@ def normalized_shares(members: list[TrackerMember]) -> dict[int, Decimal]:
         return {}
     explicit_total = sum((Decimal(member.share_percent) for member in members), Decimal("0"))
     if explicit_total > 0:
-        return {member.user_id: Decimal(member.share_percent) / explicit_total for member in members}
+        return {member.user_id: Decimal(member.share_percent) / Decimal("100") for member in members}
     equal = Decimal("1") / Decimal(len(members))
     return {member.user_id: equal for member in members}
 
@@ -215,3 +234,36 @@ def balance_for_tracker(tracker: Tracker, expenses: list[Expense]) -> dict[str, 
 
 def current_year() -> int:
     return date.today().year
+
+
+def period_options(session: Session, tracker_id: int) -> dict[str, Any]:
+    rows = (
+        session.query(
+            extract("year", Expense.date).label("year"),
+            extract("month", Expense.date).label("month"),
+        )
+        .filter(Expense.tracker_id == tracker_id)
+        .group_by("year", "month")
+        .order_by("year", "month")
+        .all()
+    )
+    months = [f"{int(row.year):04d}-{int(row.month):02d}" for row in rows]
+    years = sorted({int(row.year) for row in rows})
+    return {"months": months, "years": years}
+
+
+def monthly_totals_for_year(session: Session, tracker_id: int, year: int) -> list[dict[str, Any]]:
+    rows = (
+        session.query(extract("month", Expense.date).label("month"), func.sum(Expense.amount).label("total"))
+        .filter(Expense.tracker_id == tracker_id, extract("year", Expense.date) == year)
+        .group_by("month")
+        .order_by("month")
+        .all()
+    )
+    return [
+        {
+            "month": f"{year:04d}-{int(row.month):02d}",
+            "total": float(money(row.total or 0)),
+        }
+        for row in rows
+    ]

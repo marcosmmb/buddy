@@ -17,6 +17,7 @@ class RegisterPayload(BaseModel):
     name: str
     password: str = Field(min_length=8)
     default_currency: str = "USD"
+    is_admin: bool = False
 
     @field_validator("email")
     @classmethod
@@ -32,6 +33,22 @@ class RegisterPayload(BaseModel):
 class PreferencesPayload(BaseModel):
     name: str | None = None
     default_currency: str | None = None
+    theme: str | None = None
+    current_password: str | None = None
+    new_password: str | None = Field(default=None, min_length=8)
+
+
+class AdminUserCreatePayload(BaseModel):
+    email: str
+    name: str
+    password: str = Field(min_length=8)
+    default_currency: str = "USD"
+    is_admin: bool = False
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
 
 
 class TrackerCreatePayload(BaseModel):
@@ -62,3 +79,18 @@ class ExpenseCreatePayload(BaseModel):
     @classmethod
     def normalize_currency(cls, value: str) -> str:
         return value.strip().upper()[:3]
+
+
+class CsvImportConfigPayload(BaseModel):
+    name: str
+    field_map: dict[str, str | None] = Field(default_factory=dict)
+    invert_amount: bool = False
+    currency: str = "USD"
+
+
+class CsvImportPayload(BaseModel):
+    config_id: int
+    csv_text: str
+    fallback_category_id: int
+    fallback_paid_by_id: int
+    is_shared: bool = True
