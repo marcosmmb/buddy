@@ -82,7 +82,7 @@ The app version lives in `pyproject.toml`.
 make publish
 ```
 
-This builds and pushes `marcosmmb/buddy:<version>` and `marcosmmb/buddy:latest`.
+This builds and pushes multi-architecture `linux/amd64` and `linux/arm64` images for `marcosmmb/buddy:<version>` and `marcosmmb/buddy:latest`.
 
 ## Notes
 

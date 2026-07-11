@@ -1,7 +1,9 @@
 COMPOSE ?= docker compose
 UV ?= uv
-VERSION ?= $(shell $(UV) version --short)
+PYTHON ?= python3
+VERSION ?= $(shell $(UV) version --short 2>/dev/null || $(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
 DOCKER_IMAGE ?= marcosmmb/buddy
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 DATABASE_URL ?= postgresql+psycopg://buddy:buddy@localhost:5432/buddy
 ADMIN_EMAIL ?= admin@buddy.local
 SPREADSHEET ?= /tmp/monthly_expenses.xlsx
@@ -20,9 +22,8 @@ build:
 docker-image:
 	docker build --build-arg APP_VERSION=$(VERSION) --tag $(DOCKER_IMAGE):$(VERSION) --tag $(DOCKER_IMAGE):latest .
 
-publish: docker-image
-	docker push $(DOCKER_IMAGE):$(VERSION)
-	docker push $(DOCKER_IMAGE):latest
+publish:
+	docker buildx build --platform $(DOCKER_PLATFORMS) --build-arg APP_VERSION=$(VERSION) --tag $(DOCKER_IMAGE):$(VERSION) --tag $(DOCKER_IMAGE):latest --push .
 
 down:
 	$(COMPOSE) down
