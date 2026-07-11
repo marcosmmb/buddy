@@ -20,7 +20,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open http://localhost:8000.
+Open http://localhost:3088.
 
 Default admin credentials come from `.env`:
 
@@ -38,7 +38,7 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 export DATABASE_URL=postgresql+psycopg://buddy:buddy@localhost:5432/buddy
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 3088
 ```
 
 For local development with Postgres in Docker:
