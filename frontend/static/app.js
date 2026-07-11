@@ -802,6 +802,21 @@ function renderTrackerSettings() {
   return `
     <section class="grid two">
       <div class="panel stack" style="grid-column: 1 / -1">
+        <h2>Tracker settings</h2>
+        ${
+          canManageTracker()
+            ? `<form id="tracker-settings-form" class="grid two">
+                <label>Name<input name="name" required value="${escapeHtml(tracker.name)}" /></label>
+                <label>Currency<select name="default_currency">${currencyOptions(tracker.default_currency)}</select></label>
+                <div class="row">
+                  <button class="button primary" type="submit">Save tracker</button>
+                  <button class="button danger" id="delete-tracker" type="button">Delete tracker</button>
+                </div>
+              </form>`
+            : `<div class="empty">Only tracker owners can update tracker settings.</div>`
+        }
+      </div>
+      <div class="panel stack" style="grid-column: 1 / -1">
         <h2>Default members and shares</h2>
         ${
           canManageTracker()
@@ -1014,6 +1029,8 @@ function bindAppEvents() {
 
 function bindForms() {
   document.querySelector("#tracker-form")?.addEventListener("submit", submitTracker);
+  document.querySelector("#tracker-settings-form")?.addEventListener("submit", submitTrackerSettings);
+  document.querySelector("#delete-tracker")?.addEventListener("click", deleteCurrentTracker);
   document.querySelector("#admin-user-form")?.addEventListener("submit", submitAdminUser);
   document.querySelector("#category-form")?.addEventListener("submit", submitCategory);
   document.querySelector("#expense-form")?.addEventListener("submit", submitExpense);
@@ -1099,6 +1116,39 @@ async function submitAdminUser(event) {
       }),
     }),
   );
+}
+
+async function submitTrackerSettings(event) {
+  event.preventDefault();
+  const tracker = currentTracker();
+  const formData = new FormData(event.currentTarget);
+  await mutate(() =>
+    api(`/api/trackers/${tracker.id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        name: formData.get("name"),
+        default_currency: formData.get("default_currency"),
+      }),
+    }),
+  );
+}
+
+async function deleteCurrentTracker() {
+  const tracker = currentTracker();
+  if (!tracker) return;
+  if (!window.confirm(`Delete tracker "${tracker.name}" and all of its expenses? This cannot be undone.`)) return;
+  state.error = "";
+  try {
+    await api(`/api/trackers/${tracker.id}`, { method: "DELETE" });
+    state.trackerId = null;
+    state.tab = "overview";
+    localStorage.removeItem("buddy_tracker_id");
+    localStorage.setItem("buddy_tab", state.tab);
+    await refresh();
+  } catch (error) {
+    state.error = error.message;
+    renderApp();
+  }
 }
 
 async function submitCategory(event) {

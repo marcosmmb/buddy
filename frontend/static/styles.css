@@ -372,6 +372,15 @@ h3 {
   background: var(--accent-strong);
 }
 
+.button.danger {
+  background: rgba(185, 59, 69, 0.12);
+  color: var(--red);
+}
+
+.button.danger:hover {
+  background: rgba(185, 59, 69, 0.2);
+}
+
 .button.ghost {
   background: transparent;
   color: inherit;

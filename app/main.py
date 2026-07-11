@@ -31,6 +31,7 @@ from app.schemas import (
     PreferencesPayload,
     RegisterPayload,
     TrackerCreatePayload,
+    TrackerUpdatePayload,
 )
 from app.security import hash_password, new_token, verify_password
 from app.services import (
@@ -417,6 +418,56 @@ def create_tracker(request: Request, data: Annotated[TrackerCreatePayload, Body(
         return serialize_tracker(tracker)
 
 
+@put("/api/trackers/{tracker_id:int}")
+def update_tracker(request: Request, tracker_id: int, data: Annotated[TrackerUpdatePayload, Body()]) -> dict[str, Any]:
+    user = require_user(request)
+    with db_session() as session:
+        tracker = (
+            session.query(Tracker)
+            .options(joinedload(Tracker.members).joinedload(TrackerMember.user))
+            .filter(Tracker.id == tracker_id)
+            .one_or_none()
+        )
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        if not is_tracker_owner(tracker, user):
+            raise HTTPException(status_code=403, detail="Only tracker owners can update tracker settings")
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Tracker name is required")
+        currency = normalize_currency(data.default_currency)
+        tracker.name = name
+        tracker.default_currency = currency
+        session.query(Expense).filter(Expense.tracker_id == tracker_id).update({"currency": currency}, synchronize_session=False)
+        session.query(CsvImportConfig).filter(CsvImportConfig.tracker_id == tracker_id).update({"currency": currency}, synchronize_session=False)
+        session.flush()
+        tracker = (
+            session.query(Tracker)
+            .options(joinedload(Tracker.members).joinedload(TrackerMember.user))
+            .filter(Tracker.id == tracker_id)
+            .one()
+        )
+        return serialize_tracker(tracker)
+
+
+@delete("/api/trackers/{tracker_id:int}", status_code=200)
+def delete_tracker(request: Request, tracker_id: int) -> dict[str, str]:
+    user = require_user(request)
+    with db_session() as session:
+        tracker = (
+            session.query(Tracker)
+            .options(joinedload(Tracker.members).joinedload(TrackerMember.user))
+            .filter(Tracker.id == tracker_id)
+            .one_or_none()
+        )
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        if not is_tracker_owner(tracker, user):
+            raise HTTPException(status_code=403, detail="Only tracker owners can delete trackers")
+        session.delete(tracker)
+    return {"status": "ok"}
+
+
 @put("/api/trackers/{tracker_id:int}/members")
 def update_members(request: Request, tracker_id: int, data: Annotated[MemberUpdatePayload, Body()]) -> dict[str, Any]:
     user = require_user(request)
@@ -801,6 +852,8 @@ app = Litestar(
         admin_delete_user,
         trackers,
         create_tracker,
+        update_tracker,
+        delete_tracker,
         update_members,
         monthly_shares,
         update_monthly_shares,

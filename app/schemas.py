@@ -57,6 +57,11 @@ class TrackerCreatePayload(BaseModel):
     member_ids: list[int] = Field(default_factory=list)
 
 
+class TrackerUpdatePayload(BaseModel):
+    name: str
+    default_currency: str = "USD"
+
+
 class MemberUpdatePayload(BaseModel):
     members: list[dict[str, Any]]
 

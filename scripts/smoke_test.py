@@ -228,6 +228,26 @@ def main() -> None:
             response = client.get(path, headers=headers)
             response.raise_for_status()
 
+        disposable_response = client.post(
+            "/api/trackers",
+            headers=headers,
+            json={"name": "Disposable", "default_currency": "USD", "member_ids": [sam_id]},
+        )
+        disposable_response.raise_for_status()
+        disposable_id = disposable_response.json()["id"]
+        update_tracker_response = client.put(
+            f"/api/trackers/{disposable_id}",
+            headers=headers,
+            json={"name": "Disposable updated", "default_currency": "CAD"},
+        )
+        update_tracker_response.raise_for_status()
+        assert update_tracker_response.json()["name"] == "Disposable updated"
+        assert update_tracker_response.json()["default_currency"] == "CAD"
+        delete_tracker_response = client.delete(f"/api/trackers/{disposable_id}", headers=headers)
+        delete_tracker_response.raise_for_status()
+        missing_tracker_response = client.get(f"/api/trackers/{disposable_id}/categories", headers=headers)
+        assert missing_tracker_response.status_code == 404
+
     os.unlink(db_file.name)
     print("smoke ok")
 
