@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Buddy logo">
+  <rect width="192" height="192" rx="40" fill="#f1b84b" />
+  <g fill="#16202a">
+    <rect x="54" y="40" width="36" height="112" rx="14" />
+    <rect x="74" y="40" width="70" height="56" rx="28" />
+    <rect x="74" y="96" width="78" height="56" rx="28" />
+  </g>
+  <g fill="#f1b84b">
+    <rect x="91" y="58" width="31" height="20" rx="10" />
+    <rect x="91" y="114" width="37" height="20" rx="10" />
+  </g>
+</svg>
