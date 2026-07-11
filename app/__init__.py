@@ -1,0 +1,1 @@
+"""Buddy application package."""
