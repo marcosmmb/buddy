@@ -309,7 +309,7 @@ function renderAuth() {
     <main class="auth-page">
       <section class="auth-hero">
         <div class="auth-brand-cluster">
-          <div class="brand auth-brand"><span class="mark auth-mark">B</span><span>Buddy</span></div>
+          <div class="brand auth-brand"><img class="brand-logo auth-logo" src="/static/buddy-icon.svg?v=9" alt="" /><span>Buddy</span></div>
           <img class="auth-mascot" src="/static/buddy-mascot-bee.png" alt="Buddy bee mascot" />
         </div>
         <h1>Budgets, shared costs, and payback math in one self-hosted place.</h1>
@@ -372,7 +372,7 @@ function renderApp() {
     <div class="shell ${state.sidebarCollapsed ? "sidebar-collapsed" : ""}">
       <aside class="sidebar">
         <div class="brand-row">
-          <div class="brand"><span class="mark">B</span><span class="sidebar-text">Buddy</span></div>
+          <div class="brand"><img class="brand-logo" src="/static/buddy-icon.svg?v=9" alt="" /><span class="sidebar-text">Buddy</span></div>
           <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Toggle menu">${state.sidebarCollapsed ? ">" : "<"}</button>
         </div>
         <div class="user-block">
