@@ -41,6 +41,7 @@ from app.services import (
     get_tracker_for_user,
     is_tracker_owner,
     member_breakdown_for_expenses,
+    money,
     monthly_share_overrides,
     monthly_totals_for_year,
     overview_for_expenses,
@@ -219,7 +220,7 @@ def csv_export_value(expense: Expense, field: str, invert_amount: bool) -> str:
         return expense.date.isoformat()
     if field == "amount":
         amount = -expense.amount if invert_amount else expense.amount
-        return f"{amount.quantize(Decimal('0.01'))}"
+        return f"{money(amount)}"
     if field == "description":
         return expense.description or ""
     if field == "category":

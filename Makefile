@@ -4,7 +4,7 @@ DATABASE_URL ?= postgresql+psycopg://buddy:buddy@localhost:5432/buddy
 ADMIN_EMAIL ?= admin@buddy.local
 SPREADSHEET ?= /Users/marcos/Downloads/Monthly Expenses (Canada).xlsx
 
-.PHONY: up down restart build logs ps smoke import-monthly import-monthly-replace db-shell app-shell
+.PHONY: up down restart build logs ps test smoke import-monthly import-monthly-replace db-shell app-shell
 
 up:
 	$(COMPOSE) up -d --build
@@ -22,6 +22,9 @@ logs:
 
 ps:
 	$(COMPOSE) ps
+
+test:
+	LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(PYTHON) -m unittest discover -s tests
 
 smoke:
 	DATABASE_URL="$(DATABASE_URL)" LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(PYTHON) scripts/smoke_test.py
