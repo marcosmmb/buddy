@@ -31,6 +31,29 @@ ADMIN_PASSWORD=change-me-now
 
 Change them before exposing the app anywhere outside your machine.
 
+## Local Docker Deployment
+
+To run Buddy from Docker Hub without building from source:
+
+```bash
+docker compose -f docker-compose.deploy.yml up -d
+```
+
+This pulls `marcosmmb/buddy:latest` and `postgres:16-alpine`, stores database data in a Docker volume, and serves Buddy on http://localhost:3088.
+
+Set values in a local `.env` file to change credentials, secrets, or the host port:
+
+```text
+BUDDY_PORT=3088
+POSTGRES_DB=buddy
+POSTGRES_USER=buddy
+POSTGRES_PASSWORD=change-this
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=change-this-too
+ADMIN_NAME=Buddy Admin
+APP_SECRET=replace-with-a-long-random-secret
+```
+
 ## Local Development
 
 ```bash
