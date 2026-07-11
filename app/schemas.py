@@ -61,23 +61,30 @@ class MemberUpdatePayload(BaseModel):
     members: list[dict[str, Any]]
 
 
+class MonthlySharesPayload(BaseModel):
+    month: str
+    shares: list[dict[str, Any]]
+
+
 class CategoryCreatePayload(BaseModel):
     name: str
-    color: str = "#4677ff"
+    color: str = "#f1b84b"
 
 
 class ExpenseCreatePayload(BaseModel):
     date: date
     category_id: int
     amount: Decimal
-    currency: str
+    currency: str | None = None
     paid_by_id: int
     description: str = ""
     is_shared: bool = True
 
     @field_validator("currency")
     @classmethod
-    def normalize_currency(cls, value: str) -> str:
+    def normalize_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return value.strip().upper()[:3]
 
 
@@ -89,7 +96,7 @@ class CsvImportConfigPayload(BaseModel):
     name: str
     field_map: dict[str, str | None] = Field(default_factory=dict)
     invert_amount: bool = False
-    currency: str = "USD"
+    currency: str | None = None
 
 
 class CsvPreviewPayload(BaseModel):

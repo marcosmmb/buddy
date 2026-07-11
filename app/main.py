@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from app.db import db_session, init_database
-from app.models import Category, CsvImportConfig, Expense, SessionToken, Tracker, TrackerMember, User
+from app.models import Category, CsvImportConfig, Expense, SessionToken, Tracker, TrackerMember, TrackerMonthlyShare, User
 from app.schemas import (
     AdminUserCreatePayload,
     CategoryCreatePayload,
@@ -27,6 +27,7 @@ from app.schemas import (
     ExpenseCreatePayload,
     LoginPayload,
     MemberUpdatePayload,
+    MonthlySharesPayload,
     PreferencesPayload,
     RegisterPayload,
     TrackerCreatePayload,
@@ -34,9 +35,11 @@ from app.schemas import (
 from app.security import hash_password, new_token, verify_password
 from app.services import (
     SUPPORTED_CURRENCIES,
+    balance_for_tracker,
     expense_query,
     get_tracker_for_user,
     is_tracker_owner,
+    monthly_share_overrides,
     monthly_totals_for_year,
     overview_for_expenses,
     period_options,
@@ -50,17 +53,22 @@ from app.services import (
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 STARTER_CATEGORIES = [
-    ("Groceries", "#166d5b"),
+    ("Groceries", "#f1b84b"),
     ("Restaurants", "#b45309"),
     ("Transportation", "#285c9d"),
     ("Housing", "#7c3aed"),
-    ("Utilities", "#0f766e"),
+    ("Utilities", "#d99b25"),
     ("Entertainment", "#be123c"),
-    ("Health", "#047857"),
+    ("Health", "#f4c45d"),
     ("Travel", "#0369a1"),
     ("Shopping", "#9333ea"),
     ("Other", "#6b7280"),
 ]
+LEGACY_STARTER_CATEGORY_COLORS = {
+    ("Groceries", "#166d5b"): "#f1b84b",
+    ("Utilities", "#0f766e"): "#d99b25",
+    ("Health", "#047857"): "#f4c45d",
+}
 
 
 def require_user(request: Request) -> User:
@@ -97,6 +105,14 @@ def validate_share_total(members: list[dict[str, Any]]) -> None:
     total = sum((Decimal(str(item.get("share_percent", 0))) for item in members), Decimal("0"))
     if total > Decimal("100"):
         raise HTTPException(status_code=400, detail="Member share percentages cannot exceed 100%")
+
+
+def normalize_month(value: str) -> str:
+    try:
+        datetime.strptime(value, "%Y-%m")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Month must use YYYY-MM format") from exc
+    return value
 
 
 def clean_cell(value: Any) -> str:
@@ -186,7 +202,7 @@ def build_csv_preview_rows(
                     "paid_by_id": paid_by_id,
                     "paid_by": name_by_user.get(paid_by_id, ""),
                     "amount": float(amount),
-                    "currency": config.currency,
+                    "currency": tracker.default_currency,
                     "description": description,
                     "is_shared": data.is_shared,
                 }
@@ -194,6 +210,39 @@ def build_csv_preview_rows(
         except Exception as exc:
             skipped.append({"row": index, "reason": str(exc)})
     return {"rows": rows, "skipped": skipped}
+
+
+def monthly_share_response(session: Any, tracker: Tracker, month: str) -> dict[str, Any]:
+    overrides = {
+        share.user_id: share
+        for share in session.query(TrackerMonthlyShare).filter(
+            TrackerMonthlyShare.tracker_id == tracker.id,
+            TrackerMonthlyShare.month == month,
+        )
+    }
+    return {
+        "month": month,
+        "shares": [
+            {
+                "user_id": member.user_id,
+                "name": member.user.name,
+                "email": member.user.email,
+                "default_share_percent": float(member.share_percent),
+                "share_percent": float(overrides.get(member.user_id, member).share_percent),
+                "has_override": member.user_id in overrides,
+            }
+            for member in tracker.members
+        ],
+    }
+
+
+def normalize_legacy_category_colors() -> None:
+    with db_session() as session:
+        for (name, old_color), new_color in LEGACY_STARTER_CATEGORY_COLORS.items():
+            session.query(Category).filter(Category.name == name, Category.color == old_color).update(
+                {"color": new_color},
+                synchronize_session=False,
+            )
 
 
 @get("/")
@@ -413,6 +462,55 @@ def update_members(request: Request, tracker_id: int, data: Annotated[MemberUpda
         return serialize_tracker(tracker)
 
 
+@get("/api/trackers/{tracker_id:int}/monthly-shares")
+def monthly_shares(request: Request, tracker_id: int, month: str) -> dict[str, Any]:
+    user = require_user(request)
+    selected_month = normalize_month(month)
+    with db_session() as session:
+        tracker = get_tracker_for_user(session, tracker_id, user)
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        return monthly_share_response(session, tracker, selected_month)
+
+
+@put("/api/trackers/{tracker_id:int}/monthly-shares")
+def update_monthly_shares(request: Request, tracker_id: int, data: Annotated[MonthlySharesPayload, Body()]) -> dict[str, Any]:
+    user = require_user(request)
+    selected_month = normalize_month(data.month)
+    validate_share_total(data.shares)
+    with db_session() as session:
+        tracker = (
+            session.query(Tracker)
+            .options(joinedload(Tracker.members).joinedload(TrackerMember.user))
+            .filter(Tracker.id == tracker_id)
+            .one_or_none()
+        )
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        if not is_tracker_owner(tracker, user):
+            raise HTTPException(status_code=403, detail="Only tracker owners can manage monthly shares")
+        member_ids = {member.user_id for member in tracker.members}
+        for item in data.shares:
+            user_id = int(item["user_id"])
+            if user_id not in member_ids:
+                raise HTTPException(status_code=400, detail="Monthly shares can only be set for tracker members")
+            share = (
+                session.query(TrackerMonthlyShare)
+                .filter(
+                    TrackerMonthlyShare.tracker_id == tracker_id,
+                    TrackerMonthlyShare.user_id == user_id,
+                    TrackerMonthlyShare.month == selected_month,
+                )
+                .one_or_none()
+            )
+            if share is None:
+                share = TrackerMonthlyShare(tracker_id=tracker_id, user_id=user_id, month=selected_month)
+                session.add(share)
+            share.share_percent = Decimal(str(item.get("share_percent", 0)))
+        session.flush()
+        return monthly_share_response(session, tracker, selected_month)
+
+
 @get("/api/trackers/{tracker_id:int}/categories")
 def categories(request: Request, tracker_id: int) -> list[dict[str, Any]]:
     user = require_user(request)
@@ -478,7 +576,7 @@ def create_expense(request: Request, tracker_id: int, data: Annotated[ExpenseCre
             paid_by_id=data.paid_by_id,
             date=data.date,
             amount=data.amount,
-            currency=normalize_currency(data.currency),
+            currency=tracker.default_currency,
             description=data.description.strip(),
             is_shared=data.is_shared,
         )
@@ -486,7 +584,7 @@ def create_expense(request: Request, tracker_id: int, data: Annotated[ExpenseCre
         session.flush()
         expense = (
             session.query(Expense)
-            .options(joinedload(Expense.category), joinedload(Expense.paid_by))
+            .options(joinedload(Expense.category), joinedload(Expense.paid_by), joinedload(Expense.tracker))
             .filter(Expense.id == expense.id)
             .one()
         )
@@ -506,13 +604,13 @@ def update_expense(request: Request, tracker_id: int, expense_id: int, data: Ann
         expense.paid_by_id = data.paid_by_id
         expense.date = data.date
         expense.amount = data.amount
-        expense.currency = normalize_currency(data.currency)
+        expense.currency = tracker.default_currency
         expense.description = data.description.strip()
         expense.is_shared = data.is_shared
         session.flush()
         expense = (
             session.query(Expense)
-            .options(joinedload(Expense.category), joinedload(Expense.paid_by))
+            .options(joinedload(Expense.category), joinedload(Expense.paid_by), joinedload(Expense.tracker))
             .filter(Expense.id == expense.id)
             .one()
         )
@@ -523,7 +621,8 @@ def update_expense(request: Request, tracker_id: int, expense_id: int, data: Ann
 def delete_expense(request: Request, tracker_id: int, expense_id: int) -> dict[str, str]:
     user = require_user(request)
     with db_session() as session:
-        if get_tracker_for_user(session, tracker_id, user) is None:
+        tracker = get_tracker_for_user(session, tracker_id, user)
+        if tracker is None:
             raise HTTPException(status_code=404, detail="Tracker not found")
         deleted = session.query(Expense).filter(Expense.id == expense_id, Expense.tracker_id == tracker_id).delete()
         if not deleted:
@@ -589,10 +688,12 @@ def overview(
                 "expenses": [serialize_expense(expense) for expense in rows],
             }
         rows = expense_query(session, tracker_id, month=period).all()
+        share_overrides = monthly_share_overrides(session, tracker_id, period)
         return {
             "period_type": "month",
             "period": period,
             "summary": overview_for_expenses(rows),
+            "balance": balance_for_tracker(tracker, rows, share_overrides),
             "monthly_totals": [],
             "expenses": [serialize_expense(expense) for expense in rows],
         }
@@ -613,7 +714,8 @@ def create_csv_config(request: Request, tracker_id: int, data: Annotated[CsvImpo
     user = require_user(request)
     require_admin(user)
     with db_session() as session:
-        if get_tracker_for_user(session, tracker_id, user) is None:
+        tracker = get_tracker_for_user(session, tracker_id, user)
+        if tracker is None:
             raise HTTPException(status_code=404, detail="Tracker not found")
         field_map = {key: clean_cell(value) for key, value in data.field_map.items() if clean_cell(value)}
         config = CsvImportConfig(
@@ -621,7 +723,7 @@ def create_csv_config(request: Request, tracker_id: int, data: Annotated[CsvImpo
             name=data.name.strip(),
             field_map=field_map,
             invert_amount=data.invert_amount,
-            currency=normalize_currency(data.currency),
+            currency=tracker.default_currency,
             created_by_id=user.id,
         )
         session.add(config)
@@ -671,7 +773,7 @@ def import_csv(request: Request, tracker_id: int, data: Annotated[CsvImportPaylo
                         paid_by_id=row.paid_by_id,
                         date=row.date,
                         amount=row.amount,
-                        currency=normalize_currency(row.currency),
+                        currency=tracker.default_currency,
                         description=row.description.strip(),
                         is_shared=row.is_shared,
                     )
@@ -697,6 +799,8 @@ app = Litestar(
         trackers,
         create_tracker,
         update_members,
+        monthly_shares,
+        update_monthly_shares,
         categories,
         create_category,
         delete_category,
@@ -713,7 +817,7 @@ app = Litestar(
         preview_csv_import,
         import_csv,
     ],
-    on_startup=[init_database],
+    on_startup=[init_database, normalize_legacy_category_colors],
     static_files_config=[
         StaticFilesConfig(path="/static", directories=[FRONTEND_DIR / "static"]),
     ],

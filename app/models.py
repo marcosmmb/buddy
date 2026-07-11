@@ -30,6 +30,7 @@ class User(Base):
 
     memberships: Mapped[list[TrackerMember]] = relationship(back_populates="user", cascade="all, delete-orphan")
     sessions: Mapped[list[SessionToken]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    monthly_shares: Mapped[list[TrackerMonthlyShare]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class SessionToken(Base):
@@ -53,6 +54,7 @@ class Tracker(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     members: Mapped[list[TrackerMember]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
+    monthly_shares: Mapped[list[TrackerMonthlyShare]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
     categories: Mapped[list[Category]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
     expenses: Mapped[list[Expense]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
     csv_configs: Mapped[list[CsvImportConfig]] = relationship(back_populates="tracker", cascade="all, delete-orphan")
@@ -72,6 +74,20 @@ class TrackerMember(Base):
     user: Mapped[User] = relationship(back_populates="memberships")
 
 
+class TrackerMonthlyShare(Base):
+    __tablename__ = "tracker_monthly_shares"
+    __table_args__ = (UniqueConstraint("tracker_id", "user_id", "month", name="uq_tracker_monthly_share"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tracker_id: Mapped[int] = mapped_column(ForeignKey("trackers.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    month: Mapped[str] = mapped_column(String(7), index=True)
+    share_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
+
+    tracker: Mapped[Tracker] = relationship(back_populates="monthly_shares")
+    user: Mapped[User] = relationship(back_populates="monthly_shares")
+
+
 class Category(Base):
     __tablename__ = "categories"
     __table_args__ = (UniqueConstraint("tracker_id", "name", name="uq_tracker_category"),)
@@ -79,7 +95,7 @@ class Category(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     tracker_id: Mapped[int] = mapped_column(ForeignKey("trackers.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(120))
-    color: Mapped[str] = mapped_column(String(20), default="#4677ff")
+    color: Mapped[str] = mapped_column(String(20), default="#f1b84b")
 
     tracker: Mapped[Tracker] = relationship(back_populates="categories")
     expenses: Mapped[list[Expense]] = relationship(back_populates="category")

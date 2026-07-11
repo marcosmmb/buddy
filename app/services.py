@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import and_, extract, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import Category, CsvImportConfig, Expense, Tracker, TrackerMember, User
+from app.models import Category, CsvImportConfig, Expense, Tracker, TrackerMember, TrackerMonthlyShare, User
 
 
 Money = Decimal
@@ -63,6 +63,7 @@ def serialize_category(category: Category) -> dict[str, Any]:
 
 
 def serialize_expense(expense: Expense) -> dict[str, Any]:
+    tracker_currency = expense.tracker.default_currency if expense.tracker is not None else expense.currency
     return {
         "id": expense.id,
         "tracker_id": expense.tracker_id,
@@ -73,7 +74,7 @@ def serialize_expense(expense: Expense) -> dict[str, Any]:
         "paid_by": expense.paid_by.name,
         "date": expense.date.isoformat(),
         "amount": float(expense.amount),
-        "currency": expense.currency,
+        "currency": tracker_currency,
         "description": expense.description,
         "is_shared": expense.is_shared,
     }
@@ -108,7 +109,7 @@ def get_tracker_for_user(session: Session, tracker_id: int, user: User) -> Track
 def expense_query(session: Session, tracker_id: int, month: str | None = None, year: int | None = None):
     query = (
         session.query(Expense)
-        .options(joinedload(Expense.category), joinedload(Expense.paid_by))
+        .options(joinedload(Expense.category), joinedload(Expense.paid_by), joinedload(Expense.tracker))
         .filter(Expense.tracker_id == tracker_id)
         .order_by(Expense.date.desc(), Expense.id.desc())
     )
@@ -156,18 +157,33 @@ def overview_for_expenses(expenses: list[Expense]) -> dict[str, Any]:
     }
 
 
-def normalized_shares(members: list[TrackerMember]) -> dict[int, Decimal]:
+def normalized_shares(members: list[TrackerMember], overrides: dict[int, Decimal] | None = None) -> dict[int, Decimal]:
     if not members:
         return {}
-    explicit_total = sum((Decimal(member.share_percent) for member in members), Decimal("0"))
+    overrides = overrides or {}
+    share_by_user = {
+        member.user_id: Decimal(overrides.get(member.user_id, member.share_percent))
+        for member in members
+    }
+    explicit_total = sum(share_by_user.values(), Decimal("0"))
     if explicit_total > 0:
-        return {member.user_id: Decimal(member.share_percent) / Decimal("100") for member in members}
+        return {user_id: share / Decimal("100") for user_id, share in share_by_user.items()}
     equal = Decimal("1") / Decimal(len(members))
     return {member.user_id: equal for member in members}
 
 
-def balance_for_tracker(tracker: Tracker, expenses: list[Expense]) -> dict[str, Any]:
-    shares = normalized_shares(tracker.members)
+def monthly_share_overrides(session: Session, tracker_id: int, month: str) -> dict[int, Decimal]:
+    return {
+        share.user_id: Decimal(share.share_percent)
+        for share in session.query(TrackerMonthlyShare).filter(
+            TrackerMonthlyShare.tracker_id == tracker_id,
+            TrackerMonthlyShare.month == month,
+        )
+    }
+
+
+def balance_for_tracker(tracker: Tracker, expenses: list[Expense], share_overrides: dict[int, Decimal] | None = None) -> dict[str, Any]:
+    shares = normalized_shares(tracker.members, share_overrides)
     shared_expenses = [expense for expense in expenses if expense.is_shared]
     shared_total = sum((money(expense.amount) for expense in shared_expenses), money("0"))
     paid_shared: dict[int, Money] = defaultdict(lambda: money("0"))

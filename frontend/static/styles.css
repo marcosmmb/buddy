@@ -5,8 +5,8 @@
   --line: #d8dee8;
   --paper: #fbfcfe;
   --panel: #ffffff;
-  --accent: #166d5b;
-  --accent-strong: #0f5748;
+  --accent: #f1b84b;
+  --accent-strong: #d99b25;
   --blue: #285c9d;
   --red: #b93b45;
   --yellow: #f1b84b;
@@ -19,8 +19,8 @@ body[data-theme="dark"] {
   --line: #344253;
   --paper: #101820;
   --panel: #172231;
-  --accent: #38a58d;
-  --accent-strong: #49b99f;
+  --accent: #f4c45d;
+  --accent-strong: #ffd36e;
   --blue: #72a7e8;
   --red: #ff7d88;
   --yellow: #f4c45d;
@@ -46,6 +46,7 @@ button,
 input,
 select,
 textarea {
+  accent-color: var(--accent);
   font: inherit;
 }
 
@@ -332,7 +333,7 @@ h3 {
 
 .button.primary {
   background: var(--accent);
-  color: #fff;
+  color: #16202a;
 }
 
 .button.primary:hover {
@@ -390,6 +391,10 @@ label {
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.compact-label {
+  min-width: 160px;
 }
 
 input,
@@ -454,6 +459,40 @@ th {
 .amount {
   font-variant-numeric: tabular-nums;
   font-weight: 800;
+}
+
+.tiny-line {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.member-total-card {
+  box-shadow: none;
+}
+
+.duplicate-row {
+  background: rgba(241, 184, 75, 0.14);
+}
+
+.duplicate-pill {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(241, 184, 75, 0.24);
+  color: #8a5a00;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+body[data-theme="dark"] .duplicate-row {
+  background: rgba(244, 196, 93, 0.12);
+}
+
+body[data-theme="dark"] .duplicate-pill {
+  color: #f4c45d;
 }
 
 .table-input {

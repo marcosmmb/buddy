@@ -12,11 +12,13 @@ const state = {
   periodType: localStorage.getItem("buddy_period_type") || "month",
   period: localStorage.getItem("buddy_period") || new Date().toISOString().slice(0, 7),
   expenseMonth: localStorage.getItem("buddy_expense_month") || new Date().toISOString().slice(0, 7),
+  categoryChartMember: localStorage.getItem("buddy_category_chart_member") || "all",
   categories: [],
   expenses: [],
   overview: null,
   periodOptions: { months: [], years: [] },
   csvConfigs: [],
+  monthlyShares: { month: "", shares: [] },
   csvModal: null,
   error: "",
 };
@@ -79,6 +81,96 @@ function monthTotal() {
   return state.expenses.reduce((total, expense) => total + Number(expense.amount || 0), 0);
 }
 
+function expenseDuplicateMap(expenses) {
+  const counts = new Map();
+  for (const expense of expenses) {
+    const key = [
+      expense.date,
+      expense.category_id,
+      expense.paid_by_id,
+      Number(expense.amount).toFixed(2),
+      expense.description.trim().toLowerCase(),
+      expense.is_shared ? "shared" : "individual",
+    ].join("|");
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const result = new Map();
+  for (const expense of expenses) {
+    const key = [
+      expense.date,
+      expense.category_id,
+      expense.paid_by_id,
+      Number(expense.amount).toFixed(2),
+      expense.description.trim().toLowerCase(),
+      expense.is_shared ? "shared" : "individual",
+    ].join("|");
+    result.set(expense.id, counts.get(key) > 1);
+  }
+  return result;
+}
+
+function memberExpenseSummary(expenses = state.expenses) {
+  const rows = new Map();
+  const shares = new Map();
+  const monthlyShares = state.monthlyShares.shares?.length
+    ? state.monthlyShares.shares
+    : (currentTracker()?.members || []).map((member) => ({
+        user_id: member.user_id,
+        name: member.name,
+        share_percent: member.share_percent,
+      }));
+  for (const share of monthlyShares) {
+    rows.set(share.user_id, { name: share.name, shared: 0, individual: 0, total: 0 });
+    shares.set(share.user_id, Number(share.share_percent || 0) / 100);
+  }
+  for (const expense of expenses) {
+    const amount = Number(expense.amount || 0);
+    if (expense.is_shared) {
+      for (const [userId, shareRatio] of shares.entries()) {
+        const row = rows.get(userId);
+        if (!row) continue;
+        const allocated = amount * shareRatio;
+        row.shared += allocated;
+        row.total += allocated;
+      }
+    } else {
+      const row = rows.get(expense.paid_by_id) || { name: expense.paid_by, shared: 0, individual: 0, total: 0 };
+      row.individual += amount;
+      row.total += amount;
+      rows.set(expense.paid_by_id, row);
+    }
+  }
+  return [...rows.values()].filter((row) => row.total !== 0);
+}
+
+function renderMemberSummaryCards(memberSummary = memberExpenseSummary()) {
+  const tracker = currentTracker();
+  if (!memberSummary.length) return `<div class="empty" style="grid-column: 1 / -1">No expenses for this month.</div>`;
+  return memberSummary
+    .map(
+      (row) => `
+      <div class="card metric member-total-card">
+        <span class="muted">${escapeHtml(row.name)}</span>
+        <span class="metric-value">${currency(row.total, tracker.default_currency)}</span>
+        <span class="tiny-line">Shared ${currency(row.shared, tracker.default_currency)} · Individual ${currency(row.individual, tracker.default_currency)}</span>
+      </div>
+    `,
+    )
+    .join("");
+}
+
+function categoryRowsForSelectedMember(summary) {
+  if (state.categoryChartMember === "all") return summary.by_category || [];
+  const selectedId = Number(state.categoryChartMember);
+  const selectedMember = currentTracker()?.members.find((member) => member.user_id === selectedId);
+  if (!selectedMember) return summary.by_category || [];
+  const totals = new Map();
+  for (const row of summary.by_person_category || []) {
+    if (row.person === selectedMember.name) totals.set(row.category, (totals.get(row.category) || 0) + Number(row.total || 0));
+  }
+  return [...totals.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 async function api(path, options = {}) {
   const headers = { "content-type": "application/json", ...(options.headers || {}) };
   if (state.token) headers.authorization = `Bearer ${state.token}`;
@@ -125,18 +217,21 @@ async function loadTrackerData() {
   if (!tracker) return;
   const overviewParams = new URLSearchParams({ period_type: state.periodType, period: state.period });
   const expenseParams = new URLSearchParams({ month: state.expenseMonth });
-  const [categories, expenses, overview, periodOptions, csvConfigs] = await Promise.all([
+  const shareParams = new URLSearchParams({ month: state.expenseMonth });
+  const [categories, expenses, overview, periodOptions, csvConfigs, monthlyShares] = await Promise.all([
     api(`/api/trackers/${tracker.id}/categories`),
     api(`/api/trackers/${tracker.id}/expenses?${expenseParams}`),
     api(`/api/trackers/${tracker.id}/overview?${overviewParams}`),
     api(`/api/trackers/${tracker.id}/period-options`),
     api(`/api/trackers/${tracker.id}/csv-configs`),
+    api(`/api/trackers/${tracker.id}/monthly-shares?${shareParams}`),
   ]);
   state.categories = categories;
   state.expenses = expenses;
   state.overview = overview;
   state.periodOptions = periodOptions;
   state.csvConfigs = csvConfigs;
+  state.monthlyShares = monthlyShares;
 }
 
 function renderAuth() {
@@ -252,6 +347,7 @@ function renderContent() {
 }
 
 function label(value) {
+  if (value === "expenses") return "Monthly Expenses";
   return value.split("-").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ");
 }
 
@@ -269,23 +365,52 @@ function barWidth(value, max) {
 
 function renderBarChart(title, rows, labelKey = "name", valueKey = "total") {
   if (!rows?.length) return `<div class="panel stack"><h2>${escapeHtml(title)}</h2><div class="empty">No chart data for this selection.</div></div>`;
+  return `<div class="panel stack"><h2>${escapeHtml(title)}</h2>${renderBarChartRows(rows, labelKey, valueKey)}</div>`;
+}
+
+function renderBarChartRows(rows, labelKey = "name", valueKey = "total") {
+  if (!rows?.length) return `<div class="empty">No chart data for this selection.</div>`;
   const max = Math.max(...rows.map((row) => Math.abs(Number(row[valueKey] || 0))));
   return `
+    <div class="bar-chart">
+      ${rows
+        .map(
+          (row) => `
+          <div class="bar-row">
+            <div class="bar-label">${escapeHtml(row[labelKey])}</div>
+            <div class="bar-track"><div class="bar-fill" style="width: ${barWidth(row[valueKey], max)}%"></div></div>
+            <div class="bar-value">${currency(row[valueKey])}</div>
+          </div>
+        `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderMonthlySettlements() {
+  const tracker = currentTracker();
+  const balance = state.overview?.balance;
+  const settlements = balance?.settlements || [];
+  const rows = settlements.map((row) => [
+    escapeHtml(row.from),
+    escapeHtml(row.to),
+    currency(row.amount, tracker.default_currency),
+  ]);
+  return `
     <div class="panel stack">
-      <h2>${escapeHtml(title)}</h2>
-      <div class="bar-chart">
-        ${rows
-          .map(
-            (row) => `
-            <div class="bar-row">
-              <div class="bar-label">${escapeHtml(row[labelKey])}</div>
-              <div class="bar-track"><div class="bar-fill" style="width: ${barWidth(row[valueKey], max)}%"></div></div>
-              <div class="bar-value">${currency(row[valueKey])}</div>
-            </div>
-          `,
-          )
-          .join("")}
+      <div>
+        <h2>Who owes who</h2>
+        <p class="muted">Based on shared expenses and the share split for ${escapeHtml(state.overview?.period || state.period)}.</p>
       </div>
+      ${
+        rows.length
+          ? `<div class="table-scroll"><table>
+              <thead><tr><th>From</th><th>To</th><th>Amount</th></tr></thead>
+              <tbody>${rows.map((row) => `<tr><td>${row[0]}</td><td>${row[1]}</td><td class="amount">${row[2]}</td></tr>`).join("")}</tbody>
+            </table></div>`
+          : `<div class="empty">All settled for this month.</div>`
+      }
     </div>
   `;
 }
@@ -293,6 +418,7 @@ function renderBarChart(title, rows, labelKey = "name", valueKey = "total") {
 function renderOverview() {
   const data = state.overview?.summary || {};
   const payerRows = data.by_person?.map((row) => ({ name: row.name, total: row.total })) || [];
+  const categoryRows = categoryRowsForSelectedMember(data);
   return `
     <section class="stack">
       <div class="toolbar">
@@ -310,11 +436,23 @@ function renderOverview() {
         <div class="card metric"><span class="muted">Payers</span><span class="metric-value">${data.by_person?.length || 0}</span></div>
       </div>
       <div class="grid two">
-        ${renderBarChart("Category chart", data.by_category || [])}
+        <div class="panel stack">
+          <div class="row between">
+            <h2>Category chart</h2>
+            <label class="compact-label">Member
+              <select id="category-chart-member">
+                <option value="all" ${state.categoryChartMember === "all" ? "selected" : ""}>All</option>
+                ${(currentTracker()?.members || []).map((member) => `<option value="${member.user_id}" ${String(member.user_id) === state.categoryChartMember ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
+          ${renderBarChartRows(categoryRows)}
+        </div>
         ${renderBarChart("Payer chart", payerRows)}
       </div>
       ${state.periodType === "year" ? renderBarChart("Monthly chart", state.overview?.monthly_totals || [], "month", "total") : ""}
       ${state.periodType === "year" ? renderTable("Total by month", ["Month", "Total"], state.overview?.monthly_totals?.map((row) => [row.month, currency(row.total)]) || []) : ""}
+      ${state.periodType === "month" ? renderMonthlySettlements() : ""}
       <div class="grid two">
         ${renderTable("Total by category", ["Category", "Total"], data.by_category?.map((row) => [row.name, currency(row.total)]) || [])}
         ${renderTable("Total paid by person", ["Person", "Shared", "Individual", "Total"], data.by_person?.map((row) => [row.name, currency(row.shared), currency(row.individual), currency(row.total)]) || [])}
@@ -327,11 +465,41 @@ function renderOverview() {
 
 function renderExpenses() {
   const tracker = currentTracker();
+  const memberSummary = memberExpenseSummary();
   return `
     <section class="stack">
       <div class="toolbar">
         <label>Expense month<select id="expense-month-select">${monthChoices()}</select></label>
         <div class="card metric compact-metric"><span class="muted">Month total</span><span class="metric-value" id="expense-month-total">${currency(monthTotal(), tracker.default_currency)}</span></div>
+      </div>
+      <div class="panel stack">
+        <div>
+          <h2>Share split for ${escapeHtml(state.expenseMonth)}</h2>
+          <p class="muted">This split is used to allocate shared expenses in this month. It starts from the tracker defaults until you save a custom split.</p>
+        </div>
+        ${
+          canManageTracker()
+            ? `<form id="monthly-shares-form" class="stack">
+                ${state.monthlyShares.shares
+                  .map(
+                    (share) => `
+                    <div class="row between">
+                      <div>
+                        <strong>${escapeHtml(share.name)}</strong>
+                        <div class="muted">Default ${Number(share.default_share_percent).toFixed(2)}%${share.has_override ? " · Custom for this month" : ""}</div>
+                      </div>
+                      <label style="max-width: 170px">Month share %<input type="number" step="0.01" min="0" max="100" name="monthly_share_${share.user_id}" value="${share.share_percent ?? share.default_share_percent}" /></label>
+                    </div>
+                  `,
+                  )
+                  .join("")}
+                <button class="button primary" type="submit">Save monthly shares</button>
+              </form>`
+            : `<div class="empty">Only tracker owners can manage monthly shares.</div>`
+        }
+      </div>
+      <div class="grid three" id="member-month-summary">
+        ${renderMemberSummaryCards(memberSummary)}
       </div>
       <div class="grid two">
       <div class="panel stack">
@@ -340,7 +508,6 @@ function renderExpenses() {
           <div class="form-row">
             <label>Date<input name="date" type="date" required value="${new Date().toISOString().slice(0, 10)}" /></label>
             <label>Amount<input name="amount" type="number" step="0.01" min="0" required /></label>
-            <label>Currency<select name="currency" required>${currencyOptions(tracker.default_currency)}</select></label>
           </div>
           <div class="form-row">
             <label>Category<select name="category_id" required>${state.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}</select></label>
@@ -371,6 +538,7 @@ function renderExpenses() {
 
 function renderExpenseTable(expenses, editable = false) {
   if (!expenses.length) return `<div class="empty">No expenses for this selection.</div>`;
+  const duplicates = expenseDuplicateMap(expenses);
   return `
     <div class="table-scroll">
       <table>
@@ -379,7 +547,7 @@ function renderExpenseTable(expenses, editable = false) {
           ${expenses
             .map(
               (expense) => `
-              <tr data-expense-row="${expense.id}">
+              <tr data-expense-row="${expense.id}" class="${duplicates.get(expense.id) ? "duplicate-row" : ""}">
                 ${editable ? `<td><input class="compact-check" type="checkbox" data-expense-select="${expense.id}" /></td>` : ""}
                 <td>${editable ? `<input class="table-input" name="date" type="date" value="${escapeHtml(expense.date)}" />` : escapeHtml(expense.date)}</td>
                 <td>${
@@ -392,7 +560,10 @@ function renderExpenseTable(expenses, editable = false) {
                     ? `<select class="table-input" name="paid_by_id">${currentTracker().members.map((member) => `<option value="${member.user_id}" ${member.user_id === expense.paid_by_id ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}</select>`
                     : escapeHtml(expense.paid_by)
                 }</td>
-                <td>${editable ? `<input class="table-input" name="description" value="${escapeHtml(expense.description)}" />` : escapeHtml(expense.description)}</td>
+                <td>
+                  ${editable ? `<input class="table-input" name="description" value="${escapeHtml(expense.description)}" />` : escapeHtml(expense.description)}
+                  ${duplicates.get(expense.id) ? `<span class="duplicate-pill">Possible duplicate</span>` : ""}
+                </td>
                 <td>${
                   editable
                     ? `<label class="check-row table-check"><input name="is_shared" type="checkbox" ${expense.is_shared ? "checked" : ""} /> Shared</label>`
@@ -400,7 +571,7 @@ function renderExpenseTable(expenses, editable = false) {
                 }</td>
                 <td class="amount">${
                   editable
-                    ? `<div class="row"><input class="table-input amount-input" name="amount" type="number" step="0.01" value="${expense.amount}" /><select class="table-input currency-input" name="currency">${currencyOptions(expense.currency)}</select></div>`
+                    ? `<input class="table-input amount-input" name="amount" type="number" step="0.01" value="${expense.amount}" />`
                     : currency(expense.amount, expense.currency)
                 }</td>
                 ${
@@ -436,7 +607,10 @@ function renderCsvModal() {
               <div class="stack">
                 <div class="row between">
                   <p class="muted">Review parsed expenses and select the rows to import.</p>
-                  <button class="button small" id="select-all-preview">Select all</button>
+                  <div class="row">
+                    <strong id="preview-selected-total">${currency(0)}</strong>
+                    <button class="button small" id="toggle-preview-selection">Select all</button>
+                  </div>
                 </div>
                 ${
                   skipped.length
@@ -456,7 +630,12 @@ function renderCsvModal() {
                             <td>${escapeHtml(row.category)}</td>
                             <td>${escapeHtml(row.paid_by)}</td>
                             <td>${escapeHtml(row.description)}</td>
-                            <td><span class="pill">${row.is_shared ? "Shared" : "Individual"}</span></td>
+                            <td>
+                              <select class="table-input preview-shared-select" data-preview-shared="${index}">
+                                <option value="false" ${row.is_shared ? "" : "selected"}>Individual</option>
+                                <option value="true" ${row.is_shared ? "selected" : ""}>Shared</option>
+                              </select>
+                            </td>
                             <td class="amount">${currency(row.amount, row.currency)}</td>
                           </tr>
                         `,
@@ -476,7 +655,6 @@ function renderCsvModal() {
                   <label>Fallback category<select name="fallback_category_id" required>${state.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}</select></label>
                   <label>Fallback paid by<select name="fallback_paid_by_id" required>${tracker.members.map((member) => `<option value="${member.user_id}">${escapeHtml(member.name)}</option>`).join("")}</select></label>
                 </div>
-                <label class="check-row"><input name="is_shared" type="checkbox" /> Imported expenses are shared</label>
                 <button class="button primary" type="submit">Preview CSV</button>
               </form>
             `
@@ -494,7 +672,7 @@ function renderTrackerSettings() {
         <h2>Categories</h2>
         <form id="category-form" class="stack">
           <label>Name<input name="name" required /></label>
-          <label>Color<input name="color" type="color" value="#4677ff" /></label>
+          <label>Color<input name="color" type="color" value="#f1b84b" /></label>
           <button class="button" type="submit">Add category</button>
         </form>
         <div class="stack">
@@ -511,7 +689,7 @@ function renderTrackerSettings() {
         </div>
       </div>
       <div class="panel stack">
-        <h2>Members and shares</h2>
+        <h2>Default members and shares</h2>
         ${
           canManageTracker()
             ? `<form id="members-form" class="stack">
@@ -538,7 +716,6 @@ function renderTrackerSettings() {
               <h2>CSV import schemas</h2>
               <form id="csv-config-form" class="grid two">
                 <label>Name<input name="name" required placeholder="Scotiabank credit" /></label>
-                <label>Currency<select name="currency">${currencyOptions(tracker.default_currency)}</select></label>
                 <label>Date column<input name="date" placeholder="Date" required /></label>
                 <label>Amount column<input name="amount" placeholder="Amount" required /></label>
                 <label>Description column<input name="description" placeholder="Description" /></label>
@@ -549,10 +726,9 @@ function renderTrackerSettings() {
               </form>
               ${renderTable(
                 "Saved schemas",
-                ["Name", "Currency", "Invert", "Mapped fields", ""],
+                ["Name", "Invert", "Mapped fields", ""],
                 state.csvConfigs.map((config) => [
                   config.name,
-                  config.currency,
                   config.invert_amount ? "Yes" : "No",
                   escapeHtml(Object.entries(config.field_map).map(([key, value]) => `${key}: ${value}`).join(", ")),
                   `<button class="button small" data-delete-csv-config="${config.id}">Delete</button>`,
@@ -695,6 +871,11 @@ function bindAppEvents() {
     localStorage.setItem("buddy_expense_month", state.expenseMonth);
     await refresh();
   });
+  document.querySelector("#category-chart-member")?.addEventListener("change", (event) => {
+    state.categoryChartMember = event.target.value;
+    localStorage.setItem("buddy_category_chart_member", state.categoryChartMember);
+    renderApp();
+  });
   bindForms();
 }
 
@@ -707,6 +888,7 @@ function bindForms() {
   document.querySelector("#csv-config-form")?.addEventListener("submit", submitCsvConfig);
   document.querySelector("#profile-form")?.addEventListener("submit", submitProfile);
   document.querySelector("#members-form")?.addEventListener("submit", submitMembers);
+  document.querySelector("#monthly-shares-form")?.addEventListener("submit", submitMonthlyShares);
   document.querySelector("#open-csv-import")?.addEventListener("click", () => {
     state.csvModal = { open: true, preview: null };
     renderApp();
@@ -715,11 +897,9 @@ function bindForms() {
     state.csvModal = null;
     renderApp();
   });
-  document.querySelector("#select-all-preview")?.addEventListener("click", () => {
-    document.querySelectorAll("[data-preview-row]").forEach((input) => {
-      input.checked = true;
-    });
-  });
+  document.querySelector("#toggle-preview-selection")?.addEventListener("click", togglePreviewSelection);
+  document.querySelectorAll("[data-preview-row]").forEach((input) => input.addEventListener("change", updatePreviewSelectionUi));
+  document.querySelectorAll("[data-preview-shared]").forEach((input) => input.addEventListener("change", updatePreviewSharedValue));
   document.querySelector("#confirm-csv-import")?.addEventListener("click", confirmCsvImport);
   document.querySelector("#bulk-delete-expenses")?.addEventListener("click", bulkDeleteExpenses);
   document.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/admin/users/${button.dataset.deleteUser}`, { method: "DELETE" }))));
@@ -805,7 +985,6 @@ async function submitExpense(event) {
         date: formData.get("date"),
         category_id: Number(formData.get("category_id")),
         amount: formData.get("amount"),
-        currency: formData.get("currency"),
         paid_by_id: Number(formData.get("paid_by_id")),
         description: formData.get("description"),
         is_shared: formData.get("is_shared") === "on",
@@ -820,7 +999,6 @@ function expensePayloadFromRow(expenseId) {
     date: row.querySelector('[name="date"]').value,
     category_id: Number(row.querySelector('[name="category_id"]').value),
     amount: row.querySelector('[name="amount"]').value,
-    currency: row.querySelector('[name="currency"]').value,
     paid_by_id: Number(row.querySelector('[name="paid_by_id"]').value),
     description: row.querySelector('[name="description"]').value,
     is_shared: row.querySelector('[name="is_shared"]').checked,
@@ -859,6 +1037,8 @@ function scheduleExpenseAutosave(expenseId) {
         state.expenses = state.expenses.map((expense) => (expense.id === expenseId ? updated : expense));
         const total = document.querySelector("#expense-month-total");
         if (total) total.textContent = currency(monthTotal(), tracker.default_currency);
+        const memberSummary = document.querySelector("#member-month-summary");
+        if (memberSummary) memberSummary.innerHTML = renderMemberSummaryCards();
         setAutosaveStatus(expenseId, "Saved", "positive");
       } catch (error) {
         state.error = error.message;
@@ -894,7 +1074,6 @@ async function submitCsvConfig(event) {
       method: "POST",
       body: JSON.stringify({
         name: formData.get("name"),
-        currency: formData.get("currency"),
         invert_amount: formData.get("invert_amount") === "on",
         field_map: {
           date: formData.get("date"),
@@ -922,21 +1101,50 @@ async function submitCsvPreview(event) {
         csv_text: csvText,
         fallback_category_id: Number(formData.get("fallback_category_id")),
         fallback_paid_by_id: Number(formData.get("fallback_paid_by_id")),
-        is_shared: formData.get("is_shared") === "on",
       }),
     });
     state.csvModal = { open: true, preview };
     renderApp();
+    updatePreviewSelectionUi();
   } catch (error) {
     state.error = error.message;
     renderApp();
   }
 }
 
+function selectedPreviewRows() {
+  const rows = state.csvModal?.preview?.rows || [];
+  return [...document.querySelectorAll("[data-preview-row]:checked")].map((input) => rows[Number(input.dataset.previewRow)]);
+}
+
+function updatePreviewSelectionUi() {
+  const checkboxes = [...document.querySelectorAll("[data-preview-row]")];
+  const selected = selectedPreviewRows();
+  const total = selected.reduce((sum, row) => sum + Number(row?.amount || 0), 0);
+  const totalNode = document.querySelector("#preview-selected-total");
+  if (totalNode) totalNode.textContent = `Selected total ${currency(total)}`;
+  const toggle = document.querySelector("#toggle-preview-selection");
+  if (toggle) toggle.textContent = checkboxes.length && checkboxes.every((input) => input.checked) ? "Unselect all" : "Select all";
+}
+
+function togglePreviewSelection() {
+  const checkboxes = [...document.querySelectorAll("[data-preview-row]")];
+  const shouldSelect = !checkboxes.length || !checkboxes.every((input) => input.checked);
+  checkboxes.forEach((input) => {
+    input.checked = shouldSelect;
+  });
+  updatePreviewSelectionUi();
+}
+
+function updatePreviewSharedValue(event) {
+  const index = Number(event.target.dataset.previewShared);
+  const row = state.csvModal?.preview?.rows?.[index];
+  if (row) row.is_shared = event.target.value === "true";
+}
+
 async function confirmCsvImport() {
   const tracker = currentTracker();
-  const rows = state.csvModal?.preview?.rows || [];
-  const selected = [...document.querySelectorAll("[data-preview-row]:checked")].map((input) => rows[Number(input.dataset.previewRow)]);
+  const selected = selectedPreviewRows();
   if (!selected.length) {
     state.error = "Select at least one preview row to import.";
     renderApp();
@@ -951,7 +1159,6 @@ async function confirmCsvImport() {
           date: row.date,
           category_id: row.category_id,
           amount: row.amount,
-          currency: row.currency,
           paid_by_id: row.paid_by_id,
           description: row.description,
           is_shared: row.is_shared,
@@ -993,6 +1200,28 @@ async function submitMembers(event) {
     return;
   }
   await mutate(() => api(`/api/trackers/${tracker.id}/members`, { method: "PUT", body: JSON.stringify({ members }) }));
+}
+
+async function submitMonthlyShares(event) {
+  event.preventDefault();
+  const tracker = currentTracker();
+  const formData = new FormData(event.currentTarget);
+  const shares = state.monthlyShares.shares.map((share) => ({
+    user_id: share.user_id,
+    share_percent: Number(formData.get(`monthly_share_${share.user_id}`) || 0),
+  }));
+  const total = shares.reduce((sum, share) => sum + share.share_percent, 0);
+  if (total > 100) {
+    state.error = "Member share percentages cannot exceed 100%.";
+    renderApp();
+    return;
+  }
+  await mutate(() =>
+    api(`/api/trackers/${tracker.id}/monthly-shares`, {
+      method: "PUT",
+      body: JSON.stringify({ month: state.expenseMonth, shares }),
+    }),
+  );
 }
 
 async function mutate(operation) {
