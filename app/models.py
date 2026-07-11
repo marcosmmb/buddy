@@ -68,7 +68,7 @@ class TrackerMember(Base):
     tracker_id: Mapped[int] = mapped_column(ForeignKey("trackers.id", ondelete="CASCADE"))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(40), default="member")
-    share_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
+    share_percent: Mapped[Decimal] = mapped_column(Numeric(9, 6), default=Decimal("0"))
 
     tracker: Mapped[Tracker] = relationship(back_populates="members")
     user: Mapped[User] = relationship(back_populates="memberships")
@@ -82,7 +82,7 @@ class TrackerMonthlyShare(Base):
     tracker_id: Mapped[int] = mapped_column(ForeignKey("trackers.id", ondelete="CASCADE"))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     month: Mapped[str] = mapped_column(String(7), index=True)
-    share_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
+    share_percent: Mapped[Decimal] = mapped_column(Numeric(9, 6), default=Decimal("0"))
 
     tracker: Mapped[Tracker] = relationship(back_populates="monthly_shares")
     user: Mapped[User] = relationship(back_populates="monthly_shares")

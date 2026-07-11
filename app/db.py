@@ -31,6 +31,7 @@ def db_session() -> Iterator[Session]:
 def init_database() -> None:
     Base.metadata.create_all(engine)
     ensure_user_columns()
+    ensure_share_precision()
     with db_session() as session:
         admin = session.query(User).filter(User.email == settings.admin_email.lower()).one_or_none()
         if admin is None:
@@ -70,3 +71,11 @@ def ensure_user_columns() -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
+
+def ensure_share_precision() -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE tracker_members ALTER COLUMN share_percent TYPE NUMERIC(9, 6)"))
+        connection.execute(text("ALTER TABLE tracker_monthly_shares ALTER COLUMN share_percent TYPE NUMERIC(9, 6)"))
