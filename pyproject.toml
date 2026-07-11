@@ -1,12 +1,11 @@
 [project]
 name = "buddy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted budgeting and expense tracker"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "litestar[standard]>=2.10,<3",
-    "psycopg[binary]>=3.2,<4",
     "pydantic>=2.8,<3",
     "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.30,<1",

@@ -4,31 +4,15 @@ services:
     pull_policy: always
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-buddy}:${POSTGRES_PASSWORD:-buddy}@db:5432/${POSTGRES_DB:-buddy}
+      DATABASE_URL: ${BUDDY_DATABASE_URL:-sqlite:////data/buddy.sqlite3}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@buddy.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-now}
       ADMIN_NAME: ${ADMIN_NAME:-Buddy Admin}
       APP_SECRET: ${APP_SECRET:-replace-with-a-long-random-secret}
     ports:
       - "${BUDDY_PORT:-3088}:3088"
-    depends_on:
-      db:
-        condition: service_healthy
-
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-buddy}
-      POSTGRES_USER: ${POSTGRES_USER:-buddy}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-buddy}
     volumes:
-      - buddy-postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      - buddy-data:/data
 
 volumes:
-  buddy-postgres-data:
+  buddy-data:

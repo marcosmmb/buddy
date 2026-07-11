@@ -1,6 +1,6 @@
 # Buddy
 
-Buddy is a small self-hosted budgeting and expense tracker built with Litestar, Postgres, SQLAlchemy, and a dependency-light browser frontend.
+Buddy is a small self-hosted budgeting and expense tracker built with Litestar, SQLite, SQLAlchemy, and a dependency-light browser frontend.
 
 ## Features
 
@@ -39,15 +39,13 @@ To run Buddy from Docker Hub without building from source:
 docker compose -f docker-compose.deploy.yml up -d
 ```
 
-This pulls `marcosmmb/buddy:latest` and `postgres:16-alpine`, stores database data in a Docker volume, and serves Buddy on http://localhost:3088.
+This pulls `marcosmmb/buddy:latest`, stores the SQLite database in a Docker volume, and serves Buddy on http://localhost:3088.
 
 Set values in a local `.env` file to change credentials, secrets, or the host port:
 
 ```text
 BUDDY_PORT=3088
-POSTGRES_DB=buddy
-POSTGRES_USER=buddy
-POSTGRES_PASSWORD=change-this
+BUDDY_DATABASE_URL=sqlite:////data/buddy.sqlite3
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=change-this-too
 ADMIN_NAME=Buddy Admin
@@ -58,15 +56,10 @@ APP_SECRET=replace-with-a-long-random-secret
 
 ```bash
 uv sync
-export DATABASE_URL=postgresql+psycopg://buddy:buddy@localhost:5432/buddy
 uv run uvicorn app.main:app --reload --port 3088
 ```
 
-For local development with Postgres in Docker:
-
-```bash
-docker compose up db
-```
+By default, local development stores data in `./buddy.sqlite3`. Docker stores data in `/data/buddy.sqlite3` inside the `buddy-data` volume.
 
 Run the API smoke test:
 

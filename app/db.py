@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -11,8 +13,38 @@ from app.models import Base, TrackerMember, User
 from app.security import hash_password
 
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+def sqlite_path(database_url: str) -> Path | None:
+    if database_url == "sqlite:///:memory:":
+        return None
+    if database_url.startswith("sqlite:////"):
+        return Path(database_url.removeprefix("sqlite:///"))
+    if database_url.startswith("sqlite:///"):
+        return Path(database_url.removeprefix("sqlite:///")).expanduser()
+    return None
+
+
+def create_database_engine() -> Engine:
+    if not settings.database_url.startswith("sqlite:"):
+        raise RuntimeError("Buddy now supports SQLite only. Set DATABASE_URL to a sqlite:/// URL.")
+    path = sqlite_path(settings.database_url)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return create_engine(
+        settings.database_url,
+        connect_args={"check_same_thread": False},
+        pool_pre_ping=True,
+    )
+
+
+engine = create_database_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+@event.listens_for(engine, "connect")
+def enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 @contextmanager
@@ -31,7 +63,6 @@ def db_session() -> Iterator[Session]:
 def init_database() -> None:
     Base.metadata.create_all(engine)
     ensure_user_columns()
-    ensure_share_precision()
     with db_session() as session:
         admin = session.query(User).filter(User.email == settings.admin_email.lower()).one_or_none()
         if admin is None:
@@ -62,20 +93,9 @@ def ensure_user_columns() -> None:
     if "theme" not in columns:
         statements.append("ALTER TABLE users ADD COLUMN theme VARCHAR(12) NOT NULL DEFAULT 'light'")
     if "is_active" not in columns:
-        if engine.dialect.name == "postgresql":
-            statements.append("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT true")
-        else:
-            statements.append("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
+        statements.append("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
     if not statements:
         return
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
-
-
-def ensure_share_precision() -> None:
-    if engine.dialect.name != "postgresql":
-        return
-    with engine.begin() as connection:
-        connection.execute(text("ALTER TABLE tracker_members ALTER COLUMN share_percent TYPE NUMERIC(9, 6)"))
-        connection.execute(text("ALTER TABLE tracker_monthly_shares ALTER COLUMN share_percent TYPE NUMERIC(9, 6)"))

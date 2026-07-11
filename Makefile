@@ -4,7 +4,7 @@ PYTHON ?= python3
 VERSION ?= $(shell $(UV) version --short 2>/dev/null || $(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
 DOCKER_IMAGE ?= marcosmmb/buddy
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
-DATABASE_URL ?= postgresql+psycopg://buddy:buddy@localhost:5432/buddy
+DATABASE_URL ?= sqlite:///./buddy.sqlite3
 ADMIN_EMAIL ?= admin@buddy.local
 SPREADSHEET ?= /tmp/monthly_expenses.xlsx
 
@@ -49,7 +49,7 @@ import-monthly-replace:
 	DATABASE_URL="$(DATABASE_URL)" ADMIN_EMAIL="$(ADMIN_EMAIL)" $(UV) run python scripts/import_monthly_expenses_xlsx.py "$(SPREADSHEET)" --replace
 
 db-shell:
-	$(COMPOSE) exec db psql -U buddy -d buddy
+	$(COMPOSE) exec app python -m sqlite3 /data/buddy.sqlite3
 
 app-shell:
 	$(COMPOSE) exec app sh

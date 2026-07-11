@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -79,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--admin-email", default=os.getenv("ADMIN_EMAIL", "admin@buddy.local"))
     parser.add_argument("--payer-email-domain", default="buddy.local")
     parser.add_argument("--missing-shared", choices=("shared", "individual"), default="shared")
+    parser.add_argument("--existing-tracker", action="store_true", help="Import into an existing tracker instead of creating one.")
     parser.add_argument("--replace", action="store_true", help="Delete an existing tracker with this name before importing.")
     parser.add_argument("--dry-run", action="store_true", help="Parse and summarize the workbook without writing to the database.")
     return parser.parse_args()
@@ -104,6 +106,10 @@ def sheet_month(sheet_name: str) -> str | None:
 
 def money(value: Any) -> Decimal:
     return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def expense_amount_key(value: Any) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
 
 def decimal_amount(value: Any) -> Decimal:
@@ -237,7 +243,7 @@ def parse_share_overrides(rows: list[dict[str, Any]], payers: set[str]) -> dict[
         if raw in (None, ""):
             continue
         value = Decimal(str(raw))
-        shares[name] = money(value * 100 if value <= 1 else value)
+        shares[name] = value * 100 if value <= 1 else value
     return shares
 
 
@@ -313,11 +319,17 @@ def run_import(args: argparse.Namespace, expenses: list[ParsedExpense], monthly_
 
     init_database()
     with db_session() as session:
+        existing = session.query(Tracker).filter(Tracker.name == args.tracker_name).one_or_none()
+        if args.existing_tracker:
+            if existing is None:
+                raise RuntimeError(f"Tracker {args.tracker_name!r} was not found")
+            import_into_existing_tracker(session, existing, expenses, monthly_shares)
+            return
+
         admin = session.query(User).filter(User.email == args.admin_email.lower()).one_or_none()
         if admin is None:
             raise RuntimeError(f"Admin user {args.admin_email!r} was not found")
 
-        existing = session.query(Tracker).filter(Tracker.name == args.tracker_name).one_or_none()
         if existing is not None:
             if not args.replace:
                 raise RuntimeError(f"Tracker {args.tracker_name!r} already exists. Re-run with --replace to recreate it.")
@@ -414,6 +426,112 @@ def run_import(args: argparse.Namespace, expenses: list[ParsedExpense], monthly_
             )
         session.flush()
         print(f"Imported {len(expenses)} expenses into tracker {args.tracker_name!r} (id={tracker.id}).")
+
+
+def import_into_existing_tracker(
+    session: Any,
+    tracker: Tracker,
+    expenses: list[ParsedExpense],
+    monthly_shares: dict[str, dict[str, Decimal]],
+) -> None:
+    from app.models import Category, Expense, TrackerMonthlyShare
+
+    members_by_name = {member.user.name.strip(): member.user for member in tracker.members}
+    payer_names = sorted({expense.paid_by.strip() for expense in expenses})
+    missing_payers = [payer for payer in payer_names if payer not in members_by_name]
+    if missing_payers:
+        raise RuntimeError(
+            f"Tracker {tracker.name!r} is missing members for spreadsheet payers: {', '.join(missing_payers)}"
+        )
+
+    categories = {
+        category.name.strip(): category
+        for category in session.query(Category).filter(Category.tracker_id == tracker.id).all()
+    }
+    created_categories = 0
+    for index, name in enumerate(sorted({expense.category.strip() for expense in expenses})):
+        if name in categories:
+            continue
+        category = Category(
+            tracker_id=tracker.id,
+            name=name,
+            color=PALETTE[(len(categories) + index) % len(PALETTE)],
+        )
+        session.add(category)
+        session.flush()
+        categories[name] = category
+        created_categories += 1
+
+    upserted_shares = 0
+    for month, shares in monthly_shares.items():
+        for payer, percent in shares.items():
+            user = members_by_name.get(payer.strip())
+            if user is None:
+                continue
+            share = (
+                session.query(TrackerMonthlyShare)
+                .filter(
+                    TrackerMonthlyShare.tracker_id == tracker.id,
+                    TrackerMonthlyShare.user_id == user.id,
+                    TrackerMonthlyShare.month == month,
+                )
+                .one_or_none()
+            )
+            if share is None:
+                share = TrackerMonthlyShare(tracker_id=tracker.id, user_id=user.id, month=month)
+                session.add(share)
+            share.share_percent = percent
+            upserted_shares += 1
+
+    existing_counts = Counter(
+        (
+            expense.date,
+            expense.category_id,
+            expense.paid_by_id,
+            expense_amount_key(expense.amount),
+            (expense.description or "").strip(),
+            expense.is_shared,
+        )
+        for expense in session.query(Expense).filter(Expense.tracker_id == tracker.id).all()
+    )
+    seen_counts: Counter[tuple[Any, ...]] = Counter()
+    imported = 0
+    skipped_duplicates = 0
+    for parsed in expenses:
+        category = categories[parsed.category.strip()]
+        payer = members_by_name[parsed.paid_by.strip()]
+        key = (
+            parsed.date,
+            category.id,
+            payer.id,
+            expense_amount_key(parsed.amount),
+            parsed.description.strip(),
+            parsed.is_shared,
+        )
+        seen_counts[key] += 1
+        if seen_counts[key] <= existing_counts[key]:
+            skipped_duplicates += 1
+            continue
+        session.add(
+            Expense(
+                tracker_id=tracker.id,
+                category_id=category.id,
+                paid_by_id=payer.id,
+                date=parsed.date,
+                amount=parsed.amount,
+                currency=tracker.default_currency,
+                description=parsed.description.strip(),
+                is_shared=parsed.is_shared,
+            )
+        )
+        imported += 1
+
+    session.flush()
+    print(
+        f"Imported {imported} expenses into existing tracker {tracker.name!r} (id={tracker.id}). "
+        f"Skipped {skipped_duplicates} duplicates. Created {created_categories} categories. "
+        f"Upserted {upserted_shares} monthly share overrides."
+    )
 
 
 def main() -> None:

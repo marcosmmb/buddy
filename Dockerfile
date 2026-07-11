@@ -13,6 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:$PATH" \
+    DATABASE_URL=sqlite:////data/buddy.sqlite3 \
     APP_VERSION=${APP_VERSION}
 
 WORKDIR /app
@@ -22,6 +23,8 @@ RUN uv sync --frozen --no-dev
 
 COPY app ./app
 COPY frontend ./frontend
+
+VOLUME ["/data"]
 
 EXPOSE 3088
 
