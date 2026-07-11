@@ -129,6 +129,7 @@ def expense_query(session: Session, tracker_id: int, month: str | None = None, y
 def overview_for_expenses(expenses: list[Expense]) -> dict[str, Any]:
     total = money("0")
     by_category: dict[str, Money] = defaultdict(lambda: money("0"))
+    category_colors: dict[str, str] = {}
     by_person: dict[str, dict[str, Money]] = defaultdict(lambda: {"shared": money("0"), "individual": money("0"), "total": money("0")})
     by_person_category: dict[str, dict[str, Money]] = defaultdict(lambda: defaultdict(lambda: money("0")))
 
@@ -136,6 +137,7 @@ def overview_for_expenses(expenses: list[Expense]) -> dict[str, Any]:
         amount = Decimal(expense.amount)
         total += amount
         by_category[expense.category.name] += amount
+        category_colors[expense.category.name] = expense.category.color
         person_totals = by_person[expense.paid_by.name]
         key = "shared" if expense.is_shared else "individual"
         person_totals[key] += amount
@@ -144,13 +146,13 @@ def overview_for_expenses(expenses: list[Expense]) -> dict[str, Any]:
 
     return {
         "total": float(total),
-        "by_category": [{"name": name, "total": float(value)} for name, value in sorted(by_category.items())],
+        "by_category": [{"name": name, "color": category_colors.get(name, "#f1b84b"), "total": float(value)} for name, value in sorted(by_category.items())],
         "by_person": [
             {"name": name, "shared": float(values["shared"]), "individual": float(values["individual"]), "total": float(values["total"])}
             for name, values in sorted(by_person.items())
         ],
         "by_person_category": [
-            {"person": person, "category": category, "total": float(value)}
+            {"person": person, "category": category, "category_color": category_colors.get(category, "#f1b84b"), "total": float(value)}
             for person, categories in sorted(by_person_category.items())
             for category, value in sorted(categories.items())
         ],

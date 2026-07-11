@@ -218,7 +218,11 @@ def main() -> None:
             headers=headers,
         )
         overview_response.raise_for_status()
-        settlements = overview_response.json()["balance"]["settlements"]
+        overview = overview_response.json()
+        category_summary = next(row for row in overview["summary"]["by_category"] if row["name"] == seeded_categories[0]["name"])
+        assert category_summary["color"] == seeded_categories[0]["color"]
+        assert overview["summary"]["by_person_category"][0]["category_color"] == seeded_categories[0]["color"]
+        settlements = overview["balance"]["settlements"]
         assert settlements == [
             {
                 "from_user_id": sam_id,

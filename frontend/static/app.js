@@ -231,10 +231,14 @@ function categoryRowsForSelectedMember(summary) {
   const selectedMember = currentTracker()?.members.find((member) => member.user_id === selectedId);
   if (!selectedMember) return summary.by_category || [];
   const totals = new Map();
+  const colors = new Map();
   for (const row of summary.by_person_category || []) {
-    if (row.person === selectedMember.name) totals.set(row.category, (totals.get(row.category) || 0) + Number(row.total || 0));
+    if (row.person === selectedMember.name) {
+      totals.set(row.category, (totals.get(row.category) || 0) + Number(row.total || 0));
+      colors.set(row.category, row.category_color);
+    }
   }
-  return [...totals.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => a.name.localeCompare(b.name));
+  return [...totals.entries()].map(([name, total]) => ({ name, total, color: colors.get(name) })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function api(path, options = {}) {
@@ -460,7 +464,7 @@ function renderBarChartRows(rows, labelKey = "name", valueKey = "total") {
           (row) => `
           <div class="bar-row">
             <div class="bar-label">${escapeHtml(row[labelKey])}</div>
-            <div class="bar-track"><div class="bar-fill" style="width: ${barWidth(row[valueKey], max)}%"></div></div>
+            <div class="bar-track"><div class="bar-fill" style="width: ${barWidth(row[valueKey], max)}%; ${row.color ? `background: ${escapeHtml(row.color)};` : ""}"></div></div>
             <div class="bar-value">${currency(row[valueKey])}</div>
           </div>
         `,
@@ -507,7 +511,7 @@ function renderCategoryBreakdownTable(data) {
     "Total by category",
     ["Category", "Total", "Paid by person"],
     (data.by_category || []).map((row) => [
-      escapeHtml(row.name),
+      `<span class="swatch" style="background:${escapeHtml(row.color || "#f1b84b")}"></span>${escapeHtml(row.name)}`,
       currency(row.total),
       byPerson.get(row.name)?.join("<br />") || "",
     ]),
