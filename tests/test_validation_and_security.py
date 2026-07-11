@@ -6,10 +6,10 @@ from decimal import Decimal
 
 from litestar.exceptions import HTTPException
 
-from app.main import normalize_currency, normalize_month, require_admin, validate_expense_payload, validate_share_total
 from app.models import Category
 from app.schemas import ExpenseCreatePayload, RegisterPayload
 from app.security import hash_password, new_token, verify_password
+from app.utils import normalize_currency, normalize_month, require_admin, validate_expense_payload, validate_share_total
 from tests.helpers import make_category, make_member, make_tracker, make_user
 
 

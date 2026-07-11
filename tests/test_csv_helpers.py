@@ -8,9 +8,9 @@ from io import StringIO
 
 from litestar.exceptions import HTTPException
 
-from app.main import build_csv_export, build_csv_preview_rows, clean_cell, csv_export_filename, csv_export_value, parse_amount, parse_csv_date
 from app.models import Category, CsvImportConfig
 from app.schemas import CsvPreviewPayload
+from app.utils import build_csv_export, build_csv_preview_rows, clean_cell, csv_export_filename, csv_export_value, parse_amount, parse_csv_date
 from tests.helpers import make_category, make_expense, make_member, make_tracker, make_user
 
 
