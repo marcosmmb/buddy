@@ -655,6 +655,10 @@ function renderExpenses() {
         <h2>Import CSV</h2>
         <p class="muted">Preview CSV rows before adding them. Rows are unselected by default.</p>
         <button class="button" id="open-csv-import" ${state.csvConfigs.length && state.categories.length ? "" : "disabled"}>Open CSV import</button>
+        <form id="csv-export-form" class="stack">
+          <label>Export schema<select name="config_id" required>${state.csvConfigs.map((config) => `<option value="${config.id}">${escapeHtml(config.name)}</option>`).join("")}</select></label>
+          <button class="button" type="submit" ${state.csvConfigs.length ? "" : "disabled"}>Export ${escapeHtml(state.expenseMonth)} CSV</button>
+        </form>
       </div>
       <div class="panel stack" style="grid-column: 1 / -1">
         <div class="row between">
@@ -1035,6 +1039,7 @@ function bindForms() {
   document.querySelector("#category-form")?.addEventListener("submit", submitCategory);
   document.querySelector("#expense-form")?.addEventListener("submit", submitExpense);
   document.querySelector("#csv-import-form")?.addEventListener("submit", submitCsvPreview);
+  document.querySelector("#csv-export-form")?.addEventListener("submit", submitCsvExport);
   document.querySelector("#csv-config-form")?.addEventListener("submit", submitCsvConfig);
   document.querySelector("#profile-form")?.addEventListener("submit", submitProfile);
   document.querySelector("#members-form")?.addEventListener("submit", submitMembers);
@@ -1291,6 +1296,37 @@ async function submitCsvPreview(event) {
     state.csvModal = { open: true, preview };
     renderApp();
     updatePreviewSelectionUi();
+  } catch (error) {
+    state.error = error.message;
+    renderApp();
+  }
+}
+
+async function submitCsvExport(event) {
+  event.preventDefault();
+  const tracker = currentTracker();
+  const formData = new FormData(event.currentTarget);
+  const configId = Number(formData.get("config_id"));
+  const params = new URLSearchParams({ config_id: String(configId), month: state.expenseMonth });
+  try {
+    const headers = {};
+    if (state.token) headers.authorization = `Bearer ${state.token}`;
+    const response = await fetch(`/api/trackers/${tracker.id}/csv-exports?${params}`, { headers });
+    const text = await response.text();
+    if (!response.ok) {
+      const data = text ? JSON.parse(text) : null;
+      throw new Error(data?.detail || "CSV export failed");
+    }
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `${tracker.name}-${state.expenseMonth}.csv`;
+    const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   } catch (error) {
     state.error = error.message;
     renderApp();

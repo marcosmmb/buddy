@@ -165,6 +165,16 @@ def main() -> None:
         import_response.raise_for_status()
         assert import_response.json()["imported"] == 1
 
+        export_response = client.get(
+            f"/api/trackers/{tracker_id}/csv-exports?config_id={config_id}&month=2026-07",
+            headers=headers,
+        )
+        export_response.raise_for_status()
+        exported_csv = export_response.text
+        assert exported_csv.startswith("Date,Description,Amount")
+        assert "2026-07-11,Coffee,5.25" in exported_csv
+        assert "Market run updated" in exported_csv
+
         delete_response = client.delete(f"/api/trackers/{tracker_id}/expenses/{expense_id}", headers=headers)
         delete_response.raise_for_status()
 

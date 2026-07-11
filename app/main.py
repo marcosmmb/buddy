@@ -214,6 +214,46 @@ def build_csv_preview_rows(
     return {"rows": rows, "skipped": skipped}
 
 
+def csv_export_value(expense: Expense, field: str, invert_amount: bool) -> str:
+    if field == "date":
+        return expense.date.isoformat()
+    if field == "amount":
+        amount = -expense.amount if invert_amount else expense.amount
+        return f"{amount.quantize(Decimal('0.01'))}"
+    if field == "description":
+        return expense.description or ""
+    if field == "category":
+        return expense.category.name
+    if field == "paid_by":
+        return expense.paid_by.name
+    if field == "is_shared":
+        return "Shared" if expense.is_shared else "Individual"
+    return ""
+
+
+def build_csv_export(config: CsvImportConfig, expenses: list[Expense]) -> str:
+    field_map = config.field_map or {}
+    ordered_fields = ["date", "description", "amount", "category", "paid_by", "is_shared"]
+    columns = [(field, clean_cell(field_map.get(field))) for field in ordered_fields if clean_cell(field_map.get(field))]
+    if not columns:
+        raise HTTPException(status_code=400, detail="CSV config must map at least one field to export")
+    headers = [column for _, column in columns]
+    if len(headers) != len(set(headers)):
+        raise HTTPException(status_code=400, detail="CSV config cannot export duplicate column names")
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=headers)
+    writer.writeheader()
+    for expense in expenses:
+        writer.writerow({column: csv_export_value(expense, field, config.invert_amount) for field, column in columns})
+    return output.getvalue()
+
+
+def csv_export_filename(tracker: Tracker, config: CsvImportConfig, month: str) -> str:
+    raw = f"{tracker.name}-{config.name}-{month}.csv".lower()
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in raw)
+
+
 def monthly_share_response(session: Any, tracker: Tracker, month: str) -> dict[str, Any]:
     overrides = {
         share.user_id: share
@@ -839,6 +879,26 @@ def import_csv(request: Request, tracker_id: int, data: Annotated[CsvImportPaylo
         return {"imported": imported, "skipped": skipped}
 
 
+@get("/api/trackers/{tracker_id:int}/csv-exports")
+def export_csv(request: Request, tracker_id: int, config_id: int, month: str | None = None) -> Response[str]:
+    user = require_user(request)
+    selected_month = normalize_month(month or date.today().strftime("%Y-%m"))
+    with db_session() as session:
+        tracker = get_tracker_for_user(session, tracker_id, user)
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        config = session.get(CsvImportConfig, config_id)
+        if config is None or config.tracker_id != tracker_id:
+            raise HTTPException(status_code=404, detail="CSV config not found")
+        rows = expense_query(session, tracker_id, month=selected_month).all()
+        filename = csv_export_filename(tracker, config, selected_month)
+        return Response(
+            content=build_csv_export(config, rows),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+
 app = Litestar(
     route_handlers=[
         index,
@@ -872,6 +932,7 @@ app = Litestar(
         delete_csv_config,
         preview_csv_import,
         import_csv,
+        export_csv,
     ],
     on_startup=[init_database, normalize_legacy_category_colors],
     static_files_config=[
