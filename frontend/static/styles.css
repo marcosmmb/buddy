@@ -187,6 +187,32 @@ button:disabled {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.sidebar-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: auto;
+}
+
+.github-link {
+  color: #f6f8fb;
+  text-decoration: none;
+}
+
+.sidebar-footer .button.ghost {
+  flex: 1 1 auto;
+}
+
+.sidebar-collapsed .sidebar-footer {
+  flex-direction: column;
+  width: 54px;
+}
+
+.sidebar-collapsed .github-link {
+  width: 54px;
+  min-height: 44px;
+}
+
 .main {
   min-width: 0;
   padding: 28px clamp(18px, 4vw, 48px) 48px;
