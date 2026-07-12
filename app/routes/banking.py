@@ -20,10 +20,18 @@ from app.banking.service import (
 )
 from app.config import settings
 from app.db import db_session
-from app.models import BankConnection
-from app.schemas import BankTokenExchangePayload, BankTransactionImportPayload
+from app.models import BankConnection, User
+from app.schemas import BankLinkTokenPayload, BankTokenExchangePayload, BankTransactionImportPayload
 from app.services import get_tracker_for_user
+from app.two_factor import consume_bank_link_challenge, create_bank_link_challenge, verify_user_totp
 from app.utils import require_user
+
+
+def require_bank_link_two_factor(user: User, code: str | None) -> None:
+    if not user.two_factor_enabled:
+        raise HTTPException(status_code=403, detail="Enable 2FA before connecting a bank account")
+    if not code or not verify_user_totp(user, code):
+        raise HTTPException(status_code=401, detail="Enter a valid 2FA code to connect a bank account")
 
 
 class BankingController(Controller):
@@ -38,7 +46,7 @@ class BankingController(Controller):
         return {"plaid_configured": settings.plaid_configured, "plaid_env": settings.plaid_env}
 
     @post("/link-token")
-    def link_token(self, request: Request, tracker_id: int) -> dict[str, str]:
+    def link_token(self, request: Request, tracker_id: int, data: Annotated[BankLinkTokenPayload | None, Body()] = None) -> dict[str, str]:
         user = require_user(request)
         if not settings.plaid_configured:
             raise HTTPException(status_code=400, detail="Plaid is not configured")
@@ -46,7 +54,12 @@ class BankingController(Controller):
             tracker = get_tracker_for_user(session, tracker_id, user)
             if tracker is None:
                 raise HTTPException(status_code=404, detail="Tracker not found")
-            return {"link_token": PlaidClient().create_link_token(user, tracker)}
+            db_user = session.get(User, user.id)
+            if db_user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            require_bank_link_two_factor(db_user, data.two_factor_code if data is not None else None)
+            bank_link_challenge = create_bank_link_challenge(session, db_user)
+            return {"link_token": PlaidClient().create_link_token(user, tracker), "bank_link_token": bank_link_challenge.token}
 
     @post("/exchange-token")
     def exchange_token(self, request: Request, tracker_id: int, data: Annotated[BankTokenExchangePayload, Body()]) -> dict[str, Any]:
@@ -55,6 +68,8 @@ class BankingController(Controller):
             tracker = get_tracker_for_user(session, tracker_id, user)
             if tracker is None:
                 raise HTTPException(status_code=404, detail="Tracker not found")
+            if not consume_bank_link_challenge(session, user, data.bank_link_token):
+                raise HTTPException(status_code=401, detail="Verify 2FA before connecting a bank account")
             connection = create_bank_connection(session, tracker, user, data.public_token, data.institution_name)
             session.flush()
             connection = (

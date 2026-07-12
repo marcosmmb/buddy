@@ -26,6 +26,9 @@ const state = {
   bankTransactions: [],
   bankLookbackDays: Number(localStorage.getItem("buddy_bank_lookback_days")) || 30,
   csvModal: null,
+  pendingLogin: null,
+  twoFactorSetup: null,
+  bankTwoFactor: { open: false },
   error: "",
 };
 
@@ -311,6 +314,9 @@ async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers });
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
+  if (response.status === 404 && path.includes("/2fa")) {
+    throw new Error("2FA endpoints were not found. Restart or redeploy Buddy so the backend matches this UI.");
+  }
   if (!response.ok) throw new Error(data?.detail || "Request failed");
   return data;
 }
@@ -376,6 +382,7 @@ async function loadTrackerData() {
 }
 
 function renderAuth() {
+  const pending = state.pendingLogin;
   app.innerHTML = `
     <main class="auth-page">
       <section class="auth-hero">
@@ -389,16 +396,31 @@ function renderAuth() {
         <div class="stack">
           ${renderSectionTitle("Sign in")}
           ${renderError()}
-          <form id="login-form" class="stack">
-            <label>Email<input name="email" type="email" required autocomplete="username" /></label>
-            <label>Password${renderPasswordInput("password", { id: "login-password", required: true, autocomplete: "current-password" })}</label>
-            <button class="button primary" type="submit">Sign in</button>
-          </form>
+          ${
+            pending
+              ? `<form id="login-2fa-form" class="stack">
+                  <label>Authentication code<input name="code" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" required autofocus /></label>
+                  <input name="challenge_token" type="hidden" value="${escapeHtml(pending.challenge_token)}" />
+                  <button class="button primary" type="submit">Verify</button>
+                  <button class="button ghost" id="cancel-login-2fa" type="button">Back</button>
+                </form>`
+              : `<form id="login-form" class="stack">
+                  <label>Email<input name="email" type="email" required autocomplete="username" /></label>
+                  <label>Password${renderPasswordInput("password", { id: "login-password", required: true, autocomplete: "current-password" })}</label>
+                  <button class="button primary" type="submit">Sign in</button>
+                </form>`
+          }
         </div>
       </section>
     </main>
   `;
-  document.querySelector("#login-form").addEventListener("submit", submitLogin);
+  document.querySelector("#login-form")?.addEventListener("submit", submitLogin);
+  document.querySelector("#login-2fa-form")?.addEventListener("submit", submitLoginTwoFactor);
+  document.querySelector("#cancel-login-2fa")?.addEventListener("click", () => {
+    state.pendingLogin = null;
+    state.error = "";
+    renderAuth();
+  });
   bindPasswordToggles();
   document.querySelector("#close-error")?.addEventListener("click", () => {
     state.error = "";
@@ -411,18 +433,46 @@ async function submitLogin(event) {
   state.error = "";
   try {
     const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) });
-    state.token = result.token;
-    state.user = result.user;
-    localStorage.setItem("buddy_token", state.token);
-    localStorage.setItem("buddy_theme", state.user.theme);
-    applyTheme();
-    await loadBase();
-    await loadTrackerData();
-    renderApp();
+    if (result.two_factor_required) {
+      state.pendingLogin = {
+        challenge_token: result.challenge_token,
+        expires_in_seconds: result.expires_in_seconds,
+      };
+      renderAuth();
+      return;
+    }
+    await finishLogin(result);
   } catch (error) {
     state.error = error.message;
     renderAuth();
   }
+}
+
+async function submitLoginTwoFactor(event) {
+  event.preventDefault();
+  state.error = "";
+  try {
+    const result = await api("/api/auth/login/verify", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) });
+    state.pendingLogin = null;
+    await finishLogin(result);
+  } catch (error) {
+    state.error = error.message;
+    renderAuth();
+  }
+}
+
+async function finishLogin(result) {
+  state.pendingLogin = null;
+  state.twoFactorSetup = null;
+  state.bankTwoFactor = { open: false };
+  state.token = result.token;
+  state.user = result.user;
+  localStorage.setItem("buddy_token", state.token);
+  localStorage.setItem("buddy_theme", state.user.theme);
+  applyTheme();
+  await loadBase();
+  await loadTrackerData();
+  renderApp();
 }
 
 function renderApp() {
@@ -478,6 +528,7 @@ function renderApp() {
         ${renderContent()}
       </main>
     </div>
+    ${renderBankTwoFactorModal()}
   `;
   bindAppEvents();
 }
@@ -905,6 +956,24 @@ function renderCsvModal() {
   `;
 }
 
+function renderBankTwoFactorModal() {
+  if (!state.bankTwoFactor?.open) return "";
+  return `
+    <div class="modal-backdrop">
+      <div class="modal panel stack">
+        ${renderSectionTitle("Verify bank connection", "Enter a fresh 2FA code before opening Plaid Link.")}
+        <form id="bank-2fa-form" class="stack">
+          <label>Authentication code<input name="two_factor_code" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" required autofocus /></label>
+          <div class="actions">
+            <button class="button ghost" id="cancel-bank-2fa" type="button">Cancel</button>
+            <button class="button primary" type="submit">Continue</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
 function renderBankImport() {
   const tracker = currentTracker();
   const rows = state.bankTransactions || [];
@@ -1115,18 +1184,69 @@ function renderTrackerSettings() {
 
 function renderUserSettings() {
   return `
-    <section class="panel stack">
-      ${renderSectionTitle("User settings")}
-      <form id="profile-form" class="grid two">
-        <label>Display name<input name="name" value="${escapeHtml(state.user.name)}" /></label>
-        <label>Default currency<select name="default_currency">${currencyOptions(state.user.default_currency)}</select></label>
-        <label>Theme<select name="theme"><option value="light" ${state.user.theme === "light" ? "selected" : ""}>Light</option><option value="dark" ${state.user.theme === "dark" ? "selected" : ""}>Dark</option></select></label>
-        <label>Current password${renderPasswordInput("current_password", { id: "profile-current-password", autocomplete: "current-password" })}</label>
-        <label>New password${renderPasswordInput("new_password", { id: "profile-new-password", minlength: "8", autocomplete: "new-password" })}</label>
-        <div></div>
-        <button class="button primary" type="submit">Save settings</button>
-      </form>
+    <section class="stack">
+      <div class="panel stack">
+        ${renderSectionTitle("User settings")}
+        <form id="profile-form" class="grid two">
+          <label>Display name<input name="name" value="${escapeHtml(state.user.name)}" /></label>
+          <label>Default currency<select name="default_currency">${currencyOptions(state.user.default_currency)}</select></label>
+          <label>Theme<select name="theme"><option value="light" ${state.user.theme === "light" ? "selected" : ""}>Light</option><option value="dark" ${state.user.theme === "dark" ? "selected" : ""}>Dark</option></select></label>
+          <label>Current password${renderPasswordInput("current_password", { id: "profile-current-password", autocomplete: "current-password" })}</label>
+          <label>New password${renderPasswordInput("new_password", { id: "profile-new-password", minlength: "8", autocomplete: "new-password" })}</label>
+          <div></div>
+          <button class="button primary" type="submit">Save settings</button>
+        </form>
+      </div>
+      ${renderTwoFactorSettings()}
     </section>
+  `;
+}
+
+function renderTwoFactorSettings() {
+  if (state.user.two_factor_enabled) {
+    return `
+      <div class="panel stack">
+        ${renderSectionTitle("Two-factor authentication", "Protect sign-in and bank account linking with an authenticator app code.")}
+        <div class="pill success-pill">Enabled</div>
+        <form id="disable-2fa-form" class="grid two">
+          <label>Current password${renderPasswordInput("current_password", { id: "disable-2fa-password", required: true, autocomplete: "current-password" })}</label>
+          <label>Authentication code<input name="code" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" required /></label>
+          <div></div>
+          <button class="button danger" type="submit">Disable 2FA</button>
+        </form>
+      </div>
+    `;
+  }
+  return `
+    <div class="panel stack">
+      ${renderSectionTitle("Two-factor authentication", "Protect sign-in and bank account linking with an authenticator app code.")}
+      <div class="pill">Disabled</div>
+      ${
+        state.twoFactorSetup
+          ? `
+            <div class="two-factor-qr" aria-label="2FA setup QR code">
+              ${state.twoFactorSetup.qr_svg || ""}
+            </div>
+            <div class="two-factor-secret">
+              <div class="tiny">Manual setup key</div>
+              <code>${escapeHtml(state.twoFactorSetup.secret)}</code>
+            </div>
+            <label>Authenticator URI<input readonly value="${escapeHtml(state.twoFactorSetup.otpauth_uri)}" /></label>
+            <form id="enable-2fa-form" class="grid two">
+              <label>Authentication code<input name="code" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" required autofocus /></label>
+              <div></div>
+              <button class="button primary" type="submit">Enable 2FA</button>
+            </form>
+          `
+          : `
+            <form id="setup-2fa-form" class="grid two">
+              <label>Current password${renderPasswordInput("current_password", { id: "setup-2fa-password", required: true, autocomplete: "current-password" })}</label>
+              <div></div>
+              <button class="button primary" type="submit">Start setup</button>
+            </form>
+          `
+      }
+    </div>
   `;
 }
 
@@ -1272,6 +1392,9 @@ function bindForms() {
   document.querySelector("#csv-export-form")?.addEventListener("submit", submitCsvExport);
   document.querySelector("#csv-config-form")?.addEventListener("submit", submitCsvConfig);
   document.querySelector("#profile-form")?.addEventListener("submit", submitProfile);
+  document.querySelector("#setup-2fa-form")?.addEventListener("submit", setupTwoFactor);
+  document.querySelector("#enable-2fa-form")?.addEventListener("submit", enableTwoFactor);
+  document.querySelector("#disable-2fa-form")?.addEventListener("submit", disableTwoFactor);
   document.querySelector("#members-form")?.addEventListener("submit", submitMembers);
   document.querySelector("#monthly-shares-form")?.addEventListener("submit", submitMonthlyShares);
   document.querySelector("#export-tracker-backup")?.addEventListener("click", (event) => {
@@ -1293,6 +1416,11 @@ function bindForms() {
   document.querySelector("#confirm-csv-import")?.addEventListener("click", confirmCsvImport);
   document.querySelector("#bulk-delete-expenses")?.addEventListener("click", bulkDeleteExpenses);
   document.querySelector("#connect-bank")?.addEventListener("click", connectBank);
+  document.querySelector("#bank-2fa-form")?.addEventListener("submit", submitBankTwoFactor);
+  document.querySelector("#cancel-bank-2fa")?.addEventListener("click", () => {
+    state.bankTwoFactor = { open: false };
+    renderApp();
+  });
   document.querySelector("#bank-import-form")?.addEventListener("submit", importBankTransactions);
   document.querySelector("#bank-lookback-days")?.addEventListener("change", updateBankLookbackDays);
   document.querySelectorAll("[data-sync-bank]").forEach((button) => button.addEventListener("click", () => syncBankConnection(Number(button.dataset.syncBank))));
@@ -1340,6 +1468,9 @@ async function logout() {
   localStorage.removeItem("buddy_tracker_id");
   state.token = null;
   state.user = null;
+  state.pendingLogin = null;
+  state.twoFactorSetup = null;
+  state.bankTwoFactor = { open: false };
   renderAuth();
 }
 
@@ -1724,6 +1855,36 @@ async function submitProfile(event) {
   });
 }
 
+async function setupTwoFactor(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+  await mutate(async () => {
+    state.twoFactorSetup = await api("/api/me/2fa/setup", { method: "POST", body: JSON.stringify(data) });
+  });
+}
+
+async function enableTwoFactor(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+  await mutate(async () => {
+    state.user = await api("/api/me/2fa/enable", { method: "POST", body: JSON.stringify(data) });
+    state.twoFactorSetup = null;
+  });
+}
+
+async function disableTwoFactor(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+  await mutate(async () => {
+    const result = await api("/api/me/2fa", { method: "DELETE", body: JSON.stringify(data) });
+    state.token = result.token;
+    state.user = result.user;
+    state.twoFactorSetup = null;
+    localStorage.setItem("buddy_token", state.token);
+    localStorage.setItem("buddy_theme", state.user.theme);
+  });
+}
+
 async function submitMembers(event) {
   event.preventDefault();
   const tracker = currentTracker();
@@ -1767,14 +1928,34 @@ async function submitMonthlyShares(event) {
 }
 
 async function connectBank() {
-  const tracker = currentTracker();
   if (!window.Plaid) {
     state.error = "Plaid Link did not load. Check your network or content blocker.";
     renderApp();
     return;
   }
+  if (!state.user.two_factor_enabled) {
+    state.error = "Enable 2FA in User Settings before connecting a bank account.";
+    renderApp();
+    return;
+  }
+  state.bankTwoFactor = { open: true };
+  renderApp();
+}
+
+async function submitBankTwoFactor(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+  state.bankTwoFactor = { open: false };
+  await openPlaidLink(data.two_factor_code);
+}
+
+async function openPlaidLink(twoFactorCode) {
+  const tracker = currentTracker();
   try {
-    const { link_token: linkToken } = await api(`/api/trackers/${tracker.id}/bank/link-token`, { method: "POST" });
+    const { link_token: linkToken, bank_link_token: bankLinkToken } = await api(`/api/trackers/${tracker.id}/bank/link-token`, {
+      method: "POST",
+      body: JSON.stringify({ two_factor_code: twoFactorCode }),
+    });
     const handler = window.Plaid.create({
       token: linkToken,
       onSuccess: async (publicToken, metadata) => {
@@ -1783,6 +1964,7 @@ async function connectBank() {
             method: "POST",
             body: JSON.stringify({
               public_token: publicToken,
+              bank_link_token: bankLinkToken,
               institution_name: metadata?.institution?.name || "Bank",
             }),
           }),

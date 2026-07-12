@@ -692,10 +692,63 @@ body[data-theme="dark"] .duplicate-pill {
   font-weight: 800;
 }
 
+.success-pill {
+  background: rgba(55, 141, 93, 0.14);
+  color: #23754a;
+}
+
+.two-factor-secret {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+
+.two-factor-qr {
+  display: grid;
+  place-items: center;
+  width: min(220px, 100%);
+  aspect-ratio: 1;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.two-factor-qr svg {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+}
+
+.two-factor-secret code {
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0;
+  white-space: normal;
+  word-break: break-word;
+}
+
 body[data-theme="dark"] .pill,
 body[data-theme="dark"] .button {
   background: #243244;
   color: var(--ink);
+}
+
+body[data-theme="dark"] .success-pill {
+  background: rgba(80, 170, 116, 0.18);
+  color: #8fe0af;
+}
+
+body[data-theme="dark"] .two-factor-secret {
+  background: #101820;
+}
+
+body[data-theme="dark"] .two-factor-qr {
+  background: #fff;
 }
 
 body[data-theme="dark"] .button.primary {

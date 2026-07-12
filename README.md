@@ -111,7 +111,7 @@ BANK_TOKEN_ENCRYPTION_KEY=replace-with-a-long-random-secret-for-bank-tokens
 | `ADMIN_EMAIL` | `admin@buddy.local` | Email for the bootstrap admin user. |
 | `ADMIN_PASSWORD` | `change-me-now` | Password for the bootstrap admin user. |
 | `ADMIN_NAME` | `Buddy Admin` | Display name for the bootstrap admin user. |
-| `APP_SECRET` | `dev-secret-change-me` | Application secret. Set this to a long random value in real deployments. |
+| `APP_SECRET` | `dev-secret-change-me` | Application secret used for signed/encrypted app data, including 2FA secrets when no dedicated bank-token key is set. Set this to a long random value and keep it stable. |
 | `PLAID_CLIENT_ID` | empty | Plaid client ID. Required for bank import. |
 | `PLAID_SECRET` | empty | Plaid secret for the configured environment. Required for bank import. |
 | `PLAID_ENV` | `sandbox` | Plaid environment: `sandbox`, `development`, or `production`. |

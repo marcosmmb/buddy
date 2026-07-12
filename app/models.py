@@ -26,10 +26,14 @@ class User(Base):
     theme: Mapped[str] = mapped_column(String(12), default="light")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    two_factor_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    two_factor_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     memberships: Mapped[list[TrackerMember]] = relationship(back_populates="user", cascade="all, delete-orphan")
     sessions: Mapped[list[SessionToken]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    two_factor_challenges: Mapped[list[TwoFactorChallenge]] = relationship(back_populates="user", cascade="all, delete-orphan")
     monthly_shares: Mapped[list[TrackerMonthlyShare]] = relationship(back_populates="user", cascade="all, delete-orphan")
     bank_connections: Mapped[list[BankConnection]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
@@ -43,6 +47,20 @@ class SessionToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class TwoFactorChallenge(Base):
+    __tablename__ = "two_factor_challenges"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(40), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="two_factor_challenges")
 
 
 class Tracker(Base):

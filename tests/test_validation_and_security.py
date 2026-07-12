@@ -5,10 +5,24 @@ from datetime import date
 from decimal import Decimal
 
 from litestar.exceptions import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from app.models import Category
+from app.models import Base, Category, User
+from app.routes.banking import require_bank_link_two_factor
 from app.schemas import ExpenseCreatePayload, RegisterPayload
 from app.security import hash_password, new_token, verify_password
+from app.two_factor import (
+    consume_bank_link_challenge,
+    consume_login_challenge,
+    create_bank_link_challenge,
+    create_login_challenge,
+    encrypt_totp_secret,
+    generate_totp_secret,
+    provisioning_qr_svg,
+    totp_code,
+    verify_totp_code,
+)
 from app.utils import normalize_currency, normalize_month, require_admin, validate_expense_payload, validate_share_total
 from tests.helpers import make_category, make_member, make_tracker, make_user
 
@@ -38,6 +52,78 @@ class SecurityTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertGreater(len(first), 40)
         self.assertNotIn("/", first)
+
+    def test_totp_code_verification_accepts_current_window_only(self) -> None:
+        secret = generate_totp_secret()
+        code = totp_code(secret, at_time=1_800_000_000)
+
+        self.assertTrue(verify_totp_code(secret, code, at_time=1_800_000_000))
+        self.assertTrue(verify_totp_code(secret, code, at_time=1_800_000_030))
+        self.assertFalse(verify_totp_code(secret, "000000", at_time=1_800_000_000))
+        self.assertFalse(verify_totp_code(secret, code, at_time=1_800_000_120))
+
+    def test_provisioning_qr_svg_returns_inline_svg(self) -> None:
+        svg = provisioning_qr_svg("otpauth://totp/Buddy:test@example.test?secret=ABC")
+
+        self.assertTrue(svg.startswith("<svg"))
+        self.assertIn("viewBox=", svg)
+        self.assertIn("<path", svg)
+
+    def test_login_challenge_consumes_valid_two_factor_code_once(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        secret = generate_totp_secret()
+
+        with Session() as session:
+            user = User(
+                id=1,
+                email="marcos@example.test",
+                name="Marcos",
+                password_hash="x",
+                two_factor_secret=encrypt_totp_secret(secret),
+                two_factor_enabled=True,
+            )
+            session.add(user)
+            session.flush()
+            challenge = create_login_challenge(session, user)
+            token = challenge.token
+
+            self.assertEqual(consume_login_challenge(session, token, totp_code(secret)).id, user.id)
+            self.assertIsNone(consume_login_challenge(session, token, totp_code(secret)))
+
+    def test_bank_link_challenge_is_bound_to_user_and_consumed_once(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+
+        with Session() as session:
+            user = User(id=1, email="marcos@example.test", name="Marcos", password_hash="x")
+            other_user = User(id=2, email="other@example.test", name="Other", password_hash="x")
+            session.add_all([user, other_user])
+            session.flush()
+            challenge = create_bank_link_challenge(session, user)
+            token = challenge.token
+
+            self.assertFalse(consume_bank_link_challenge(session, other_user, token))
+            self.assertTrue(consume_bank_link_challenge(session, user, token))
+            self.assertFalse(consume_bank_link_challenge(session, user, token))
+
+    def test_bank_link_requires_enabled_two_factor_and_valid_code(self) -> None:
+        secret = generate_totp_secret()
+        user = make_user(1, "Marcos")
+        user.two_factor_secret = encrypt_totp_secret(secret)
+        user.two_factor_enabled = True
+
+        require_bank_link_two_factor(user, totp_code(secret))
+        with self.assertRaises(HTTPException) as bad_code:
+            require_bank_link_two_factor(user, "123456")
+        self.assertEqual(bad_code.exception.status_code, 401)
+
+        user.two_factor_enabled = False
+        with self.assertRaises(HTTPException) as disabled:
+            require_bank_link_two_factor(user, totp_code(secret))
+        self.assertEqual(disabled.exception.status_code, 403)
 
 
 class ValidationTests(unittest.TestCase):

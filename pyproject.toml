@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28,<1",
     "litestar>=2.10,<3",
     "pydantic>=2.8,<3",
+    "segno>=1.6,<2",
     "sqlalchemy>=2.0,<3",
     "uvicorn>=0.30,<1",
 ]

@@ -29,6 +29,7 @@ def serialize_user(user: User) -> dict[str, Any]:
         "theme": user.theme,
         "is_admin": user.is_admin,
         "is_active": user.is_active,
+        "two_factor_enabled": user.two_factor_enabled,
     }
 
 

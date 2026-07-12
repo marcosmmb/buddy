@@ -74,6 +74,7 @@ def init_database() -> None:
                 theme="light",
                 is_admin=True,
                 is_active=True,
+                two_factor_enabled=False,
             )
             session.add(admin)
         elif not admin.is_admin:
@@ -94,6 +95,12 @@ def ensure_user_columns() -> None:
         statements.append("ALTER TABLE users ADD COLUMN theme VARCHAR(12) NOT NULL DEFAULT 'light'")
     if "is_active" not in columns:
         statements.append("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
+    if "two_factor_secret" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN two_factor_secret TEXT")
+    if "two_factor_enabled" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN two_factor_enabled BOOLEAN NOT NULL DEFAULT 0")
+    if "two_factor_confirmed_at" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN two_factor_confirmed_at DATETIME")
     if not statements:
         return
     with engine.begin() as connection:

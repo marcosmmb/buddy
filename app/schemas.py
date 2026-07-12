@@ -12,6 +12,11 @@ class LoginPayload(BaseModel):
     password: str
 
 
+class TwoFactorLoginPayload(BaseModel):
+    challenge_token: str
+    code: str = Field(min_length=6, max_length=12)
+
+
 class RegisterPayload(BaseModel):
     email: str
     name: str
@@ -36,6 +41,19 @@ class PreferencesPayload(BaseModel):
     theme: str | None = None
     current_password: str | None = None
     new_password: str | None = Field(default=None, min_length=8)
+
+
+class TwoFactorSetupPayload(BaseModel):
+    current_password: str
+
+
+class TwoFactorEnablePayload(BaseModel):
+    code: str = Field(min_length=6, max_length=12)
+
+
+class TwoFactorDisablePayload(BaseModel):
+    current_password: str
+    code: str = Field(min_length=6, max_length=12)
 
 
 class AdminUserCreatePayload(BaseModel):
@@ -119,6 +137,11 @@ class CsvImportPayload(BaseModel):
 class BankTokenExchangePayload(BaseModel):
     public_token: str
     institution_name: str = "Bank"
+    bank_link_token: str
+
+
+class BankLinkTokenPayload(BaseModel):
+    two_factor_code: str | None = Field(default=None, min_length=6, max_length=12)
 
 
 class BankTransactionImportItem(BaseModel):
