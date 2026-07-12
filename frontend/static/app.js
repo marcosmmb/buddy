@@ -21,6 +21,10 @@ const state = {
   periodOptions: { months: [], years: [] },
   csvConfigs: [],
   monthlyShares: { month: "", shares: [] },
+  bankConfig: { plaid_configured: false, plaid_env: "sandbox" },
+  bankConnections: [],
+  bankTransactions: [],
+  bankLookbackDays: Number(localStorage.getItem("buddy_bank_lookback_days")) || 30,
   csvModal: null,
   error: "",
 };
@@ -298,13 +302,17 @@ async function loadTrackerData() {
   const overviewParams = new URLSearchParams({ period_type: state.periodType, period: state.period });
   const expenseParams = new URLSearchParams({ month: state.expenseMonth });
   const shareParams = new URLSearchParams({ month: state.expenseMonth });
-  const [categories, expenses, overview, periodOptions, csvConfigs, monthlyShares] = await Promise.all([
+  const bankParams = new URLSearchParams({ days: String(state.bankLookbackDays) });
+  const [categories, expenses, overview, periodOptions, csvConfigs, monthlyShares, bankConfig, bankConnections, bankTransactions] = await Promise.all([
     api(`/api/trackers/${tracker.id}/categories`),
     api(`/api/trackers/${tracker.id}/expenses?${expenseParams}`),
     api(`/api/trackers/${tracker.id}/overview?${overviewParams}`),
     api(`/api/trackers/${tracker.id}/period-options`),
     api(`/api/trackers/${tracker.id}/csv-configs`),
     api(`/api/trackers/${tracker.id}/monthly-shares?${shareParams}`),
+    api(`/api/trackers/${tracker.id}/bank/config`),
+    api(`/api/trackers/${tracker.id}/bank/connections`),
+    api(`/api/trackers/${tracker.id}/bank/transactions?${bankParams}`),
   ]);
   state.categories = categories;
   state.expenses = expenses;
@@ -312,6 +320,9 @@ async function loadTrackerData() {
   state.periodOptions = periodOptions;
   state.csvConfigs = csvConfigs;
   state.monthlyShares = monthlyShares;
+  state.bankConfig = bankConfig;
+  state.bankConnections = bankConnections;
+  state.bankTransactions = bankTransactions;
 }
 
 function renderAuth() {
@@ -430,7 +441,7 @@ function renderContent() {
   if (state.tab === "admin") return state.user.is_admin ? renderAdmin() : `<div class="empty">Admin access required.</div>`;
   if (state.tab === "user-settings") return renderUserSettings();
   if (!currentTracker()) return state.user.is_admin ? renderAdmin() : `<div class="empty">No trackers yet.</div>`;
-  const tabs = ["overview", "expenses", "settings"];
+  const tabs = ["overview", "expenses", "bank", "settings"];
   if (!tabs.includes(state.tab)) state.tab = "overview";
   return `
     <div class="tabs">
@@ -438,12 +449,14 @@ function renderContent() {
     </div>
     ${state.tab === "overview" ? renderOverview() : ""}
     ${state.tab === "expenses" ? renderExpenses() : ""}
+    ${state.tab === "bank" ? renderBankImport() : ""}
     ${state.tab === "settings" ? renderTrackerSettings() : ""}
   `;
 }
 
 function label(value) {
   if (value === "expenses") return "Monthly Expenses";
+  if (value === "bank") return "Bank Import";
   return value.split("-").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ");
 }
 
@@ -847,6 +860,107 @@ function renderCsvModal() {
   `;
 }
 
+function renderBankImport() {
+  const tracker = currentTracker();
+  const rows = state.bankTransactions || [];
+  return `
+    <section class="stack">
+      <div class="panel stack">
+        <div class="row between">
+          <div>
+            <h2>Bank import</h2>
+            <p class="muted">Connect a bank account, sync outgoing transactions, then choose categories before importing them as expenses.</p>
+          </div>
+          <button class="button primary" id="connect-bank" ${state.bankConfig.plaid_configured ? "" : "disabled"}>Connect bank</button>
+        </div>
+        ${
+          state.bankConfig.plaid_configured
+            ? `<div class="tiny">Plaid environment: ${escapeHtml(state.bankConfig.plaid_env)}</div>`
+            : `<div class="error">Plaid is not configured. Set PLAID_CLIENT_ID and PLAID_SECRET to enable bank import.</div>`
+        }
+      </div>
+      <div class="panel stack">
+        <h2>Connections</h2>
+        ${
+          state.bankConnections.length
+            ? `<div class="table-scroll"><table>
+                <thead><tr><th>Institution</th><th>Accounts</th><th>Status</th><th>Last sync</th><th></th></tr></thead>
+                <tbody>
+                  ${state.bankConnections
+                    .map(
+                      (connection) => `
+                      <tr>
+                        <td>${escapeHtml(connection.institution_name)}</td>
+                        <td>${connection.accounts.map((account) => `${escapeHtml(account.name)} ${account.mask ? `**${escapeHtml(account.mask)}` : ""}`).join("<br />")}</td>
+                        <td>${escapeHtml(connection.status)}${connection.error_message ? `<div class="tiny">${escapeHtml(connection.error_message)}</div>` : ""}</td>
+                        <td>${connection.last_synced_at ? escapeHtml(connection.last_synced_at.slice(0, 19).replace("T", " ")) : "Never"}</td>
+                        <td><button class="button small" data-sync-bank="${connection.id}">Sync</button></td>
+                      </tr>
+                    `,
+                    )
+                    .join("")}
+                </tbody>
+              </table></div>`
+            : `<div class="empty">No bank connections yet.</div>`
+        }
+      </div>
+      <form id="bank-import-form" class="panel stack">
+        <div class="row between">
+          <div>
+            <h2>Transactions to review</h2>
+            <div class="tiny">Showing untracked outgoing transactions from the last ${state.bankLookbackDays} days.</div>
+          </div>
+          <div class="row">
+            <label class="inline-field">Days
+              <input class="compact-input" id="bank-lookback-days" type="number" min="1" max="730" step="1" value="${state.bankLookbackDays}" />
+            </label>
+            <button class="button primary" type="submit" ${rows.length && state.categories.length ? "" : "disabled"}>Import selected</button>
+          </div>
+        </div>
+        ${
+          rows.length
+            ? `<div class="table-scroll"><table>
+                <thead><tr><th></th><th>Date</th><th>Description</th><th>Account</th><th>Amount</th><th>Category</th><th>Paid by</th><th>Type</th></tr></thead>
+                <tbody>
+                  ${rows
+                    .map(
+                      (row) => `
+                      <tr data-bank-transaction="${row.id}">
+                        <td><input class="compact-check" type="checkbox" data-bank-select="${row.id}" /></td>
+                        <td>${escapeHtml(row.date)}</td>
+                        <td><input class="table-input" name="description" value="${escapeHtml(row.description)}" /></td>
+                        <td>${escapeHtml(row.institution_name)}<div class="tiny">${escapeHtml(row.account)}</div></td>
+                        <td class="amount">${currency(row.amount, row.currency)}</td>
+                        <td>
+                          <select class="table-input" name="category_id">
+                            <option value="">Choose category</option>
+                            ${state.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}
+                          </select>
+                        </td>
+                        <td>
+                          <select class="table-input" name="paid_by_id">
+                            ${tracker.members.map((member) => `<option value="${member.user_id}" ${member.user_id === row.default_paid_by_id ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
+                          </select>
+                        </td>
+                        <td>
+                          <select class="table-input" name="is_shared">
+                            <option value="false" selected>Individual</option>
+                            <option value="true">Shared</option>
+                          </select>
+                        </td>
+                      </tr>
+                    `,
+                    )
+                    .join("")}
+                </tbody>
+              </table></div>`
+            : `<div class="empty">No untracked bank transactions in this review window.</div>`
+        }
+      </form>
+    </section>
+  `;
+}
+
 function renderTrackerSettings() {
   const tracker = currentTracker();
   return `
@@ -1113,6 +1227,10 @@ function bindForms() {
   document.querySelectorAll("[data-preview-shared]").forEach((input) => input.addEventListener("change", updatePreviewSharedValue));
   document.querySelector("#confirm-csv-import")?.addEventListener("click", confirmCsvImport);
   document.querySelector("#bulk-delete-expenses")?.addEventListener("click", bulkDeleteExpenses);
+  document.querySelector("#connect-bank")?.addEventListener("click", connectBank);
+  document.querySelector("#bank-import-form")?.addEventListener("submit", importBankTransactions);
+  document.querySelector("#bank-lookback-days")?.addEventListener("change", updateBankLookbackDays);
+  document.querySelectorAll("[data-sync-bank]").forEach((button) => button.addEventListener("click", () => syncBankConnection(Number(button.dataset.syncBank))));
   document.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/admin/users/${button.dataset.deleteUser}`, { method: "DELETE" }))));
   document.querySelectorAll("[data-delete-category]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/categories/${button.dataset.deleteCategory}`, { method: "DELETE" }))));
   document.querySelectorAll("[data-delete-csv-config]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/csv-configs/${button.dataset.deleteCsvConfig}`, { method: "DELETE" }))));
@@ -1497,6 +1615,101 @@ async function submitMonthlyShares(event) {
     api(`/api/trackers/${tracker.id}/monthly-shares`, {
       method: "PUT",
       body: JSON.stringify({ month: state.expenseMonth, shares }),
+    }),
+  );
+}
+
+async function connectBank() {
+  const tracker = currentTracker();
+  if (!window.Plaid) {
+    state.error = "Plaid Link did not load. Check your network or content blocker.";
+    renderApp();
+    return;
+  }
+  try {
+    const { link_token: linkToken } = await api(`/api/trackers/${tracker.id}/bank/link-token`, { method: "POST" });
+    const handler = window.Plaid.create({
+      token: linkToken,
+      onSuccess: async (publicToken, metadata) => {
+        await mutate(() =>
+          api(`/api/trackers/${tracker.id}/bank/exchange-token`, {
+            method: "POST",
+            body: JSON.stringify({
+              public_token: publicToken,
+              institution_name: metadata?.institution?.name || "Bank",
+            }),
+          }),
+        );
+      },
+      onExit: (_error, metadata) => {
+        if (metadata?.status === "requires_credentials") return;
+      },
+    });
+    handler.open();
+  } catch (error) {
+    state.error = error.message;
+    renderApp();
+  }
+}
+
+async function syncBankConnection(connectionId) {
+  const tracker = currentTracker();
+  syncBankLookbackDaysFromInput();
+  const params = new URLSearchParams({ days: String(state.bankLookbackDays) });
+  await mutate(() => api(`/api/trackers/${tracker.id}/bank/connections/${connectionId}/sync?${params}`, { method: "POST" }));
+}
+
+async function updateBankLookbackDays(event) {
+  state.bankLookbackDays = normalizeBankLookbackDays(event.target.value);
+  localStorage.setItem("buddy_bank_lookback_days", String(state.bankLookbackDays));
+  await refresh();
+}
+
+function syncBankLookbackDaysFromInput() {
+  const input = document.querySelector("#bank-lookback-days");
+  if (!input) return;
+  state.bankLookbackDays = normalizeBankLookbackDays(input.value);
+  localStorage.setItem("buddy_bank_lookback_days", String(state.bankLookbackDays));
+}
+
+function normalizeBankLookbackDays(value) {
+  return Math.min(Math.max(Number(value) || 30, 1), 730);
+}
+
+function selectedBankTransactionRows() {
+  return [...document.querySelectorAll("[data-bank-select]:checked")]
+    .map((input) => input.closest("[data-bank-transaction]"))
+    .filter(Boolean);
+}
+
+async function importBankTransactions(event) {
+  event.preventDefault();
+  const tracker = currentTracker();
+  const transactions = [];
+  for (const row of selectedBankTransactionRows()) {
+    const categoryId = Number(row.querySelector('[name="category_id"]').value);
+    if (!categoryId) {
+      state.error = "Choose a category for every selected bank transaction.";
+      renderApp();
+      return;
+    }
+    transactions.push({
+      transaction_id: Number(row.dataset.bankTransaction),
+      category_id: categoryId,
+      paid_by_id: Number(row.querySelector('[name="paid_by_id"]').value),
+      description: row.querySelector('[name="description"]').value,
+      is_shared: row.querySelector('[name="is_shared"]').value === "true",
+    });
+  }
+  if (!transactions.length) {
+    state.error = "Select at least one bank transaction to import.";
+    renderApp();
+    return;
+  }
+  await mutate(() =>
+    api(`/api/trackers/${tracker.id}/bank/transactions/import`, {
+      method: "POST",
+      body: JSON.stringify({ transactions }),
     }),
   );
 }

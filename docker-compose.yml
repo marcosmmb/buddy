@@ -10,6 +10,12 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-now}
       ADMIN_NAME: ${ADMIN_NAME:-Buddy Admin}
       APP_SECRET: ${APP_SECRET:-replace-with-a-long-random-secret}
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID:-}
+      PLAID_SECRET: ${PLAID_SECRET:-}
+      PLAID_ENV: ${PLAID_ENV:-sandbox}
+      PLAID_PRODUCTS: ${PLAID_PRODUCTS:-transactions}
+      PLAID_COUNTRY_CODES: ${PLAID_COUNTRY_CODES:-CA}
+      BANK_TOKEN_ENCRYPTION_KEY: ${BANK_TOKEN_ENCRYPTION_KEY:-replace-with-a-long-random-secret-for-bank-tokens}
     ports:
       - "3088:3088"
     volumes:

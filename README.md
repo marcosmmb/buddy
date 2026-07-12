@@ -21,6 +21,7 @@ Buddy helps a small group track expenses, split shared costs, understand who pai
 - 📊 Monthly and yearly breakdowns by category, payer, member, and month
 - ⚖️ Custom tracker members, categories, currencies, and monthly share splits
 - 📥 CSV import preview, import, and export workflows
+- 🏦 Optional Plaid-powered bank import with manual review and categorization
 - 🐳 Simple Docker deployment with persistent SQLite storage
 
 ## Quick Start
@@ -63,6 +64,12 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-now}
       ADMIN_NAME: ${ADMIN_NAME:-Buddy Admin}
       APP_SECRET: ${APP_SECRET:-replace-with-a-long-random-secret}
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID:-}
+      PLAID_SECRET: ${PLAID_SECRET:-}
+      PLAID_ENV: ${PLAID_ENV:-sandbox}
+      PLAID_PRODUCTS: ${PLAID_PRODUCTS:-transactions}
+      PLAID_COUNTRY_CODES: ${PLAID_COUNTRY_CODES:-CA}
+      BANK_TOKEN_ENCRYPTION_KEY: ${BANK_TOKEN_ENCRYPTION_KEY:-replace-with-a-long-random-secret-for-bank-tokens}
     ports:
       - "${BUDDY_PORT:-3088}:3088"
     volumes:
@@ -87,6 +94,12 @@ ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=replace-this-password
 ADMIN_NAME=Buddy Admin
 APP_SECRET=replace-with-a-long-random-secret
+PLAID_CLIENT_ID=
+PLAID_SECRET=
+PLAID_ENV=sandbox
+PLAID_PRODUCTS=transactions
+PLAID_COUNTRY_CODES=CA
+BANK_TOKEN_ENCRYPTION_KEY=replace-with-a-long-random-secret-for-bank-tokens
 ```
 
 ## Configuration
@@ -99,6 +112,26 @@ APP_SECRET=replace-with-a-long-random-secret
 | `ADMIN_PASSWORD` | `change-me-now` | Password for the bootstrap admin user. |
 | `ADMIN_NAME` | `Buddy Admin` | Display name for the bootstrap admin user. |
 | `APP_SECRET` | `dev-secret-change-me` | Application secret. Set this to a long random value in real deployments. |
+| `PLAID_CLIENT_ID` | empty | Plaid client ID. Required for bank import. |
+| `PLAID_SECRET` | empty | Plaid secret for the configured environment. Required for bank import. |
+| `PLAID_ENV` | `sandbox` | Plaid environment: `sandbox`, `development`, or `production`. |
+| `PLAID_PRODUCTS` | `transactions` | Comma-separated Plaid products. Buddy expects `transactions`. |
+| `PLAID_COUNTRY_CODES` | `CA` | Comma-separated Plaid country codes. |
+| `BANK_TOKEN_ENCRYPTION_KEY` | empty | Secret used to encrypt Plaid access tokens at rest. Set this in real deployments. |
+
+## Bank Import
+
+Buddy can optionally connect to Plaid for bank transaction import.
+
+The bank import flow is intentionally review-first:
+
+1. A user connects their bank account through Plaid Link.
+2. Buddy syncs outgoing transactions into a review queue.
+3. The connected user is selected as the default payer.
+4. The user manually chooses the Buddy category for each transaction.
+5. The user imports selected rows into the tracker as regular expenses.
+
+Buddy does not automatically match categories from Plaid. Plaid category data is kept only in the raw transaction payload for debugging. Syncing is manual from the Bank Import tab, so private LAN deployments do not need a public callback URL.
 
 ## Data Storage
 

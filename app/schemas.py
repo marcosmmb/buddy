@@ -114,3 +114,20 @@ class CsvPreviewPayload(BaseModel):
 
 class CsvImportPayload(BaseModel):
     expenses: list[ExpenseCreatePayload]
+
+
+class BankTokenExchangePayload(BaseModel):
+    public_token: str
+    institution_name: str = "Bank"
+
+
+class BankTransactionImportItem(BaseModel):
+    transaction_id: int
+    category_id: int
+    paid_by_id: int | None = None
+    description: str | None = None
+    is_shared: bool = False
+
+
+class BankTransactionImportPayload(BaseModel):
+    transactions: list[BankTransactionImportItem]

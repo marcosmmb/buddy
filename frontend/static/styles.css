@@ -618,6 +618,23 @@ body[data-theme="dark"] .duplicate-pill {
   min-height: 18px;
 }
 
+.inline-field {
+  align-items: center;
+  flex-direction: row;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.compact-input {
+  width: 86px;
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
 .table-check {
   min-width: 96px;
 }

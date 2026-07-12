@@ -1,5 +1,6 @@
 from app.routes.admin import AdminUserController
 from app.routes.auth import AuthController, ProfileController
+from app.routes.banking import BankingController
 from app.routes.categories import CategoryController
 from app.routes.csv import CsvController
 from app.routes.expenses import ExpenseController
@@ -16,6 +17,7 @@ route_handlers = [
     UserController,
     AdminUserController,
     TrackerController,
+    BankingController,
     CategoryController,
     ExpenseController,
     ReportController,
