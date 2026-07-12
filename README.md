@@ -55,7 +55,7 @@ To run the published Docker image without cloning the repository, create a `comp
 ```yaml
 services:
   app:
-    image: marcosmmb/buddy:latest
+    image: ghcr.io/marcosmmb/buddy:latest
     pull_policy: always
     restart: unless-stopped
     environment:
@@ -218,30 +218,6 @@ frontend/
   static/              Mascot, icon, and visual assets
 scripts/
   smoke_test.py        End-to-end API smoke test
-```
-
-## Docker Publishing
-
-The project version lives in `pyproject.toml`.
-
-Publish to Docker Hub:
-
-```bash
-make publish
-```
-
-This builds and pushes:
-
-```text
-marcosmmb/buddy:<version>
-marcosmmb/buddy:latest
-```
-
-For:
-
-```text
-linux/amd64
-linux/arm64
 ```
 
 ## Security Notes
