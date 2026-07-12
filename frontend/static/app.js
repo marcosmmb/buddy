@@ -49,6 +49,55 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+const SECTION_TOOLTIPS = {
+  "Sign in": "Access your Buddy workspace.",
+  "Who owes who": "Settlement suggestions based on shared expenses and member shares.",
+  "Total by category": "Category totals for the selected period.",
+  "Possible duplicates": "Expenses that look identical across key fields.",
+  "Category chart": "Category totals shown as a quick comparison chart.",
+  "Payer chart": "How much each member paid in the selected period.",
+  "Monthly chart": "Monthly totals across the selected year.",
+  "Total by month": "Month-by-month totals for the selected year.",
+  "Expenses this month": "Expense rows included in the current month.",
+  "Member breakdown": "Paid shared: shared expenses this member paid.\nPaid individual: individual expenses this member paid.\nPaid total: all payments by this member.\nShared expenses adjusted: this member's owed share of shared costs.\nIndividual expenses adjusted: individual costs assigned to this member.\nTotal expenses adjusted: shared adjusted plus individual adjusted.",
+  "Add expense": "Create a manual expense in the current tracker.",
+  "Import CSV": "Preview spreadsheet-style imports before creating expenses.",
+  Expenses: "Review and edit expenses for the selected month.",
+  "Bank import": "Connect Plaid and review synced transactions before importing.",
+  Connections: "Bank connections currently linked to this tracker.",
+  "Transactions to review": "Untracked outgoing bank transactions in the selected window.",
+  "Tracker settings": "Tracker name and currency controls.",
+  "Default members and shares": "Members and default split percentages for shared expenses.",
+  Categories: "Tracker categories used to organize expenses.",
+  "CSV import schemas": "Saved column mappings for CSV imports.",
+  "User settings": "Profile, theme, currency, and password settings.",
+  "Create user": "Add a user account to this Buddy instance.",
+  Users: "Users available in this Buddy instance.",
+  "Create tracker": "Create a new shared expense tracker.",
+  "Saved schemas": "Existing CSV column mappings.",
+};
+
+function renderSectionTitle(title, tooltip = SECTION_TOOLTIPS[title]) {
+  const safeTitle = escapeHtml(title);
+  if (!tooltip) return `<h2>${safeTitle}</h2>`;
+  return `
+    <div class="section-title">
+      <h2>${safeTitle}</h2>
+      <span class="tooltip" tabindex="0" role="img" aria-label="${escapeHtml(tooltip)}" data-tooltip="${escapeHtml(tooltip)}">?</span>
+    </div>
+  `;
+}
+
+function renderPasswordInput(name, { id = "", value = "", required = false, minlength = "", autocomplete = "" } = {}) {
+  const inputId = id || `password-${name.replaceAll("_", "-")}`;
+  return `
+    <span class="password-field">
+      <input id="${escapeHtml(inputId)}" name="${escapeHtml(name)}" type="password"${required ? " required" : ""}${minlength ? ` minlength="${escapeHtml(minlength)}"` : ""}${autocomplete ? ` autocomplete="${escapeHtml(autocomplete)}"` : ""} value="${escapeHtml(value)}" />
+      <button class="password-toggle" type="button" data-password-toggle="${escapeHtml(inputId)}" aria-label="Show password">Show</button>
+    </span>
+  `;
+}
+
 function currentTracker() {
   return state.trackers.find((tracker) => tracker.id === state.trackerId) || state.trackers[0] || null;
 }
@@ -337,16 +386,11 @@ function renderAuth() {
       </section>
       <section class="auth-panel">
         <div class="stack">
-          <h2>Sign in</h2>
+          ${renderSectionTitle("Sign in")}
           ${renderError()}
           <form id="login-form" class="stack">
-            <label>Email<input name="email" type="email" required value="admin@buddy.local" /></label>
-            <label>Password
-              <span class="password-field">
-                <input id="login-password" name="password" type="password" required value="change-me-now" />
-                <button class="password-toggle" id="toggle-login-password" type="button" aria-label="Show password">Show</button>
-              </span>
-            </label>
+            <label>Email<input name="email" type="email" required autocomplete="username" /></label>
+            <label>Password${renderPasswordInput("password", { id: "login-password", required: true, autocomplete: "current-password" })}</label>
             <button class="button primary" type="submit">Sign in</button>
           </form>
         </div>
@@ -354,14 +398,7 @@ function renderAuth() {
     </main>
   `;
   document.querySelector("#login-form").addEventListener("submit", submitLogin);
-  document.querySelector("#toggle-login-password")?.addEventListener("click", () => {
-    const input = document.querySelector("#login-password");
-    const button = document.querySelector("#toggle-login-password");
-    const isHidden = input.type === "password";
-    input.type = isHidden ? "text" : "password";
-    button.textContent = isHidden ? "Hide" : "Show";
-    button.setAttribute("aria-label", isHidden ? "Hide password" : "Show password");
-  });
+  bindPasswordToggles();
   document.querySelector("#close-error")?.addEventListener("click", () => {
     state.error = "";
     renderAuth();
@@ -473,8 +510,8 @@ function barWidth(value, max) {
 }
 
 function renderBarChart(title, rows, labelKey = "name", valueKey = "total") {
-  if (!rows?.length) return `<div class="panel stack"><h2>${escapeHtml(title)}</h2><div class="empty">No chart data for this selection.</div></div>`;
-  return `<div class="panel stack"><h2>${escapeHtml(title)}</h2>${renderBarChartRows(rows, labelKey, valueKey)}</div>`;
+  if (!rows?.length) return `<div class="panel stack">${renderSectionTitle(title)}<div class="empty">No chart data for this selection.</div></div>`;
+  return `<div class="panel stack">${renderSectionTitle(title)}${renderBarChartRows(rows, labelKey, valueKey)}</div>`;
 }
 
 function renderBarChartRows(rows, labelKey = "name", valueKey = "total") {
@@ -509,7 +546,7 @@ function renderMonthlySettlements() {
   return `
     <div class="panel stack">
       <div>
-        <h2>Who owes who</h2>
+        ${renderSectionTitle("Who owes who")}
         <p class="muted">Based on shared expenses and the share split for ${escapeHtml(state.overview?.period || state.period)}.</p>
       </div>
       ${
@@ -534,7 +571,7 @@ function renderCategoryBreakdownTable(data) {
   return `
     <div class="panel stack">
       <div class="row between table-header">
-        <h2>Total by category</h2>
+        ${renderSectionTitle("Total by category")}
         <label class="compact-label">Order
           <select id="category-breakdown-sort">
             <option value="amount" ${state.categoryBreakdownSort === "amount" ? "selected" : ""}>Amount</option>
@@ -572,7 +609,7 @@ function renderDuplicateExpenseSection(expenses) {
   return `
     <div class="panel stack">
       <div>
-        <h2>Possible duplicates</h2>
+        ${renderSectionTitle("Possible duplicates")}
         <p class="muted">These entries match another expense by date, category, payer, amount, description, and type.</p>
       </div>
       <div class="table-scroll">
@@ -624,7 +661,7 @@ function renderOverview() {
       <div class="grid two">
         <div class="panel stack">
           <div class="row between chart-header">
-            <h2>Category chart</h2>
+            ${renderSectionTitle("Category chart")}
             <div class="chart-controls">
               <label class="compact-label">Member
                 <select id="category-chart-member">
@@ -649,7 +686,7 @@ function renderOverview() {
       ${state.periodType === "month" ? renderMonthlySettlements() : ""}
       ${renderMemberBreakdown(state.overview?.member_breakdown || [])}
       ${renderCategoryBreakdownTable(data)}
-      ${state.periodType === "month" ? `<div class="panel stack"><h2>Expenses this month</h2>${renderExpenseTable(state.overview?.expenses || [])}</div>` : ""}
+      ${state.periodType === "month" ? `<div class="panel stack">${renderSectionTitle("Expenses this month")}${renderExpenseTable(state.overview?.expenses || [])}</div>` : ""}
     </section>
   `;
 }
@@ -666,7 +703,7 @@ function renderExpenses() {
       ${renderDuplicateExpenseSection(state.expenses)}
       <div class="panel stack">
         <div>
-          <h2>Share split for ${escapeHtml(state.expenseMonth)}</h2>
+          ${renderSectionTitle(`Share split for ${state.expenseMonth}`, "Monthly split used for shared expenses.")}
           <p class="muted">This split is used to allocate shared expenses in this month. It starts from the tracker defaults until you save a custom split.</p>
         </div>
         ${
@@ -695,7 +732,7 @@ function renderExpenses() {
       </div>
       <div class="grid two">
       <div class="panel stack">
-        <h2>Add expense</h2>
+        ${renderSectionTitle("Add expense")}
         <form id="expense-form" class="stack">
           <div class="form-row">
             <label>Date<input name="date" type="date" required value="${new Date().toISOString().slice(0, 10)}" /></label>
@@ -711,7 +748,7 @@ function renderExpenses() {
         </form>
       </div>
       <div class="panel stack">
-        <h2>Import CSV</h2>
+        ${renderSectionTitle("Import CSV")}
         <p class="muted">Preview CSV rows before adding them. Rows are unselected by default.</p>
         <button class="button" id="open-csv-import" ${state.csvConfigs.length && state.categories.length ? "" : "disabled"}>Open CSV import</button>
         <form id="csv-export-form" class="stack">
@@ -721,7 +758,7 @@ function renderExpenses() {
       </div>
       <div class="panel stack" style="grid-column: 1 / -1">
         <div class="row between">
-          <h2>Expenses</h2>
+          ${renderSectionTitle("Expenses")}
           <button class="button small" id="bulk-delete-expenses">Delete selected</button>
         </div>
         ${renderExpenseTable(state.expenses, true)}
@@ -794,7 +831,7 @@ function renderCsvModal() {
     <div class="modal-backdrop">
       <div class="modal panel stack">
         <div class="row between">
-          <h2>Import CSV</h2>
+          ${renderSectionTitle("Import CSV")}
           <button class="button small" id="close-csv-import">Close</button>
         </div>
         ${
@@ -868,7 +905,7 @@ function renderBankImport() {
       <div class="panel stack">
         <div class="row between">
           <div>
-            <h2>Bank import</h2>
+            ${renderSectionTitle("Bank import")}
             <p class="muted">Connect a bank account, sync outgoing transactions, then choose categories before importing them as expenses.</p>
           </div>
           <button class="button primary" id="connect-bank" ${state.bankConfig.plaid_configured ? "" : "disabled"}>Connect bank</button>
@@ -880,7 +917,7 @@ function renderBankImport() {
         }
       </div>
       <div class="panel stack">
-        <h2>Connections</h2>
+        ${renderSectionTitle("Connections")}
         ${
           state.bankConnections.length
             ? `<div class="table-scroll"><table>
@@ -907,7 +944,7 @@ function renderBankImport() {
       <form id="bank-import-form" class="panel stack">
         <div class="row between">
           <div>
-            <h2>Transactions to review</h2>
+            ${renderSectionTitle("Transactions to review")}
             <div class="tiny">Showing untracked outgoing transactions from the last ${state.bankLookbackDays} days.</div>
           </div>
           <div class="row">
@@ -966,7 +1003,7 @@ function renderTrackerSettings() {
   return `
     <section class="grid two">
       <div class="panel stack" style="grid-column: 1 / -1">
-        <h2>Tracker settings</h2>
+        ${renderSectionTitle("Tracker settings")}
         ${
           canManageTracker()
             ? `<form id="tracker-settings-form" class="grid two">
@@ -981,7 +1018,7 @@ function renderTrackerSettings() {
         }
       </div>
       <div class="panel stack" style="grid-column: 1 / -1">
-        <h2>Default members and shares</h2>
+        ${renderSectionTitle("Default members and shares")}
         ${
           canManageTracker()
             ? `<form id="members-form" class="stack">
@@ -1003,7 +1040,7 @@ function renderTrackerSettings() {
         }
       </div>
       <div class="panel stack" style="grid-column: 1 / -1">
-        <h2>Categories</h2>
+        ${renderSectionTitle("Categories")}
         <form id="category-form" class="stack">
           <label>Name<input name="name" required /></label>
           <label>Color<input name="color" type="color" value="#f1b84b" /></label>
@@ -1025,7 +1062,7 @@ function renderTrackerSettings() {
       ${
         state.user.is_admin
           ? `<div class="panel stack" style="grid-column: 1 / -1">
-              <h2>CSV import schemas</h2>
+              ${renderSectionTitle("CSV import schemas")}
               <form id="csv-config-form" class="grid two">
                 <label>Name<input name="name" required placeholder="Scotiabank credit" /></label>
                 <label>Date column<input name="date" placeholder="Date" required /></label>
@@ -1057,13 +1094,13 @@ function renderTrackerSettings() {
 function renderUserSettings() {
   return `
     <section class="panel stack">
-      <h2>User settings</h2>
+      ${renderSectionTitle("User settings")}
       <form id="profile-form" class="grid two">
         <label>Display name<input name="name" value="${escapeHtml(state.user.name)}" /></label>
         <label>Default currency<select name="default_currency">${currencyOptions(state.user.default_currency)}</select></label>
         <label>Theme<select name="theme"><option value="light" ${state.user.theme === "light" ? "selected" : ""}>Light</option><option value="dark" ${state.user.theme === "dark" ? "selected" : ""}>Dark</option></select></label>
-        <label>Current password<input name="current_password" type="password" /></label>
-        <label>New password<input name="new_password" type="password" minlength="8" /></label>
+        <label>Current password${renderPasswordInput("current_password", { id: "profile-current-password", autocomplete: "current-password" })}</label>
+        <label>New password${renderPasswordInput("new_password", { id: "profile-new-password", minlength: "8", autocomplete: "new-password" })}</label>
         <div></div>
         <button class="button primary" type="submit">Save settings</button>
       </form>
@@ -1076,18 +1113,18 @@ function renderAdmin() {
     <section class="grid two">
       ${renderCreateTracker()}
       <div class="panel stack">
-        <h2>Create user</h2>
+        ${renderSectionTitle("Create user")}
         <form id="admin-user-form" class="stack">
           <label>Name<input name="name" required /></label>
           <label>Email<input name="email" type="email" required /></label>
-          <label>Password<input name="password" type="password" minlength="8" required /></label>
+          <label>Password${renderPasswordInput("password", { id: "admin-user-password", minlength: "8", required: true, autocomplete: "new-password" })}</label>
           <label>Default currency<select name="default_currency">${currencyOptions(state.user.default_currency)}</select></label>
           <label class="check-row"><input name="is_admin" type="checkbox" /> Admin user</label>
           <button class="button primary" type="submit">Create user</button>
         </form>
       </div>
       <div class="panel stack" style="grid-column: 1 / -1">
-        <h2>Users</h2>
+        ${renderSectionTitle("Users")}
         ${renderTable(
           "Active accounts",
           ["Name", "Email", "Currency", "Role", ""],
@@ -1108,7 +1145,7 @@ function renderAdmin() {
 function renderCreateTracker() {
   return `
     <div class="panel stack">
-      <h2>Create tracker</h2>
+      ${renderSectionTitle("Create tracker")}
       <form id="tracker-form" class="stack">
         <label>Name<input name="name" required /></label>
         <label>Currency<select name="default_currency">${currencyOptions(state.user?.default_currency || "USD")}</select></label>
@@ -1126,7 +1163,7 @@ function renderCreateTracker() {
 function renderTable(title, headers, rows, raw = false, emptyText = "No data for this selection.") {
   return `
     <div class="panel stack">
-      <h2>${escapeHtml(title)}</h2>
+      ${renderSectionTitle(title)}
       ${
         rows.length
           ? `<div class="table-scroll"><table>
@@ -1202,6 +1239,7 @@ function bindAppEvents() {
 }
 
 function bindForms() {
+  bindPasswordToggles();
   document.querySelector("#tracker-form")?.addEventListener("submit", submitTracker);
   document.querySelector("#tracker-settings-form")?.addEventListener("submit", submitTrackerSettings);
   document.querySelector("#delete-tracker")?.addEventListener("click", deleteCurrentTracker);
@@ -1241,6 +1279,19 @@ function bindForms() {
     });
   });
   document.querySelectorAll("[data-delete-expense]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/expenses/${button.dataset.deleteExpense}`, { method: "DELETE" }))));
+}
+
+function bindPasswordToggles() {
+  document.querySelectorAll("[data-password-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = document.getElementById(button.dataset.passwordToggle);
+      if (!input) return;
+      const isHidden = input.type === "password";
+      input.type = isHidden ? "text" : "password";
+      button.textContent = isHidden ? "Hide" : "Show";
+      button.setAttribute("aria-label", isHidden ? "Hide password" : "Show password");
+    });
+  });
 }
 
 async function refresh() {

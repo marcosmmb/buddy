@@ -677,6 +677,76 @@ body[data-theme="dark"] .button.primary {
   color: #0c151c;
 }
 
+.button:hover:not(:disabled),
+.button.primary:hover:not(:disabled),
+.button.danger:hover:not(:disabled),
+.button.ghost:hover:not(:disabled),
+.icon-button:hover:not(:disabled),
+.password-toggle:hover:not(:disabled),
+.tracker-button:hover,
+.tab:hover {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: #16202a;
+}
+
+.section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tooltip {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(241, 184, 75, 0.16);
+  color: var(--accent-strong);
+  cursor: help;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: none;
+}
+
+.tooltip::after {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  z-index: 20;
+  width: max-content;
+  max-width: min(380px, 78vw);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--panel);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  text-align: left;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  white-space: pre-line;
+}
+
+.tooltip:hover::after,
+.tooltip:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .swatch {
   width: 12px;
   height: 12px;
