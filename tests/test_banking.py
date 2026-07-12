@@ -19,7 +19,7 @@ class FakePlaidClient:
         return [
             {
                 "account_id": "account-test",
-                "name": "Scotia Chequing",
+                "name": "MyBank Chequing",
                 "mask": "1234",
                 "type": "depository",
                 "subtype": "checking",
@@ -73,7 +73,7 @@ class BankingServiceTests(unittest.TestCase):
             session.add_all([user, tracker, member])
             session.flush()
 
-            create_bank_connection(session, tracker, user, "public-test", "Scotiabank", FakePlaidClient())
+            create_bank_connection(session, tracker, user, "public-test", "Mybank", FakePlaidClient())
 
             rows = {transaction.provider_transaction_id: transaction for transaction in session.query(BankTransaction).all()}
             self.assertEqual(rows["txn-outgoing"].status, "ready")
@@ -90,7 +90,7 @@ class BankingServiceTests(unittest.TestCase):
             category = Category(id=1, tracker_id=1, name="Groceries", color="#f1b84b")
             session.add_all([user, tracker, member, category])
             session.flush()
-            create_bank_connection(session, tracker, user, "public-test", "Scotiabank", FakePlaidClient())
+            create_bank_connection(session, tracker, user, "public-test", "Mybank", FakePlaidClient())
             transaction = session.query(BankTransaction).filter(BankTransaction.provider_transaction_id == "txn-outgoing").one()
 
             result = import_bank_transactions(
@@ -117,7 +117,7 @@ class BankingServiceTests(unittest.TestCase):
             category = Category(id=1, tracker_id=1, name="Groceries", color="#f1b84b")
             session.add_all([user, tracker, member, category])
             session.flush()
-            create_bank_connection(session, tracker, user, "public-test", "Scotiabank", FakePlaidClient())
+            create_bank_connection(session, tracker, user, "public-test", "Mybank", FakePlaidClient())
             transaction = session.query(BankTransaction).filter(BankTransaction.provider_transaction_id == "txn-outgoing").one()
             transaction.status = "ignored"
             review_rows = list_review_bank_transactions(session, tracker.id, 30)

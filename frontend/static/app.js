@@ -70,6 +70,7 @@ const SECTION_TOOLTIPS = {
   "Default members and shares": "Members and default split percentages for shared expenses.",
   Categories: "Tracker categories used to organize expenses.",
   "CSV import schemas": "Saved column mappings for CSV imports.",
+  Backup: "Export this tracker to a JSON backup or restore a backup into this tracker. Restore replaces tracker data and clears bank connections.",
   "User settings": "Profile, theme, currency, and password settings.",
   "Create user": "Add a user account to this Buddy instance.",
   Users: "Users available in this Buddy instance.",
@@ -1062,6 +1063,20 @@ function renderTrackerSettings() {
       ${
         state.user.is_admin
           ? `<div class="panel stack" style="grid-column: 1 / -1">
+              ${renderSectionTitle("Backup")}
+              <div class="row">
+                <button class="button" id="export-tracker-backup" type="button">Export backup</button>
+              </div>
+              <form id="restore-tracker-backup-form" class="stack">
+                <label>Backup file<input name="backup_file" type="file" accept="application/json,.json" required /></label>
+                <button class="button danger" type="submit">Restore backup</button>
+              </form>
+            </div>`
+          : ""
+      }
+      ${
+        state.user.is_admin
+          ? `<div class="panel stack" style="grid-column: 1 / -1">
               ${renderSectionTitle("CSV import schemas")}
               <form id="csv-config-form" class="grid two">
                 <label>Name<input name="name" required placeholder="Scotiabank credit" /></label>
@@ -1252,6 +1267,11 @@ function bindForms() {
   document.querySelector("#profile-form")?.addEventListener("submit", submitProfile);
   document.querySelector("#members-form")?.addEventListener("submit", submitMembers);
   document.querySelector("#monthly-shares-form")?.addEventListener("submit", submitMonthlyShares);
+  document.querySelector("#export-tracker-backup")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    exportTrackerBackup(event.currentTarget);
+  });
+  document.querySelector("#restore-tracker-backup-form")?.addEventListener("submit", restoreTrackerBackup);
   document.querySelector("#open-csv-import")?.addEventListener("click", () => {
     state.csvModal = { open: true, preview: null };
     renderApp();
@@ -1379,6 +1399,75 @@ async function deleteCurrentTracker() {
     state.error = error.message;
     renderApp();
   }
+}
+
+async function exportTrackerBackup(button = null) {
+  const tracker = currentTracker();
+  if (!tracker) return;
+  state.error = "";
+  const originalText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Preparing...";
+  }
+  try {
+    const headers = {};
+    if (state.token) headers.authorization = `Bearer ${state.token}`;
+    const response = await fetch(`/api/trackers/${tracker.id}/backup`, { headers });
+    const text = await response.text();
+    if (!response.ok) {
+      const data = text ? JSON.parse(text) : null;
+      throw new Error(data?.detail || "Backup export failed");
+    }
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `${tracker.name}-backup.json`;
+    downloadFile(text, filename, "application/json");
+    if (button) button.textContent = "Downloaded";
+  } catch (error) {
+    state.error = error.message;
+    renderApp();
+  } finally {
+    if (button) {
+      window.setTimeout(() => {
+        button.disabled = false;
+        button.textContent = originalText || "Export backup";
+      }, 1200);
+    }
+  }
+}
+
+async function restoreTrackerBackup(event) {
+  event.preventDefault();
+  const tracker = currentTracker();
+  const file = new FormData(event.currentTarget).get("backup_file");
+  if (!tracker || !file?.size) return;
+  if (!window.confirm(`Restore this backup into "${tracker.name}"? Current tracker data and bank connections will be replaced.`)) return;
+  try {
+    const backup = JSON.parse(await file.text());
+    const result = await api(`/api/trackers/${tracker.id}/backup/restore`, {
+      method: "POST",
+      body: JSON.stringify(backup),
+    });
+    state.error = `Restored backup: ${result.expenses} expenses, ${result.categories} categories, ${result.members} members.`;
+    await loadBase();
+    await loadTrackerData();
+    renderApp();
+  } catch (error) {
+    state.error = error.message;
+    renderApp();
+  }
+}
+
+function downloadFile(content, filename, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function submitCategory(event) {

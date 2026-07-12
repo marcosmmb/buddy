@@ -196,9 +196,9 @@ class CsvExportTests(unittest.TestCase):
     def test_csv_export_filename_is_safe_for_download(self) -> None:
         tracker = make_tracker(make_member(self.marcos), currency="CAD")
         tracker.name = "Home / Canada"
-        config = CsvImportConfig(id=1, tracker_id=1, name="Scotia CSV", field_map={}, invert_amount=False, currency="CAD", created_by_id=1)
+        config = CsvImportConfig(id=1, tracker_id=1, name="MyBank CSV", field_map={}, invert_amount=False, currency="CAD", created_by_id=1)
 
-        self.assertEqual(csv_export_filename(tracker, config, "2026-07"), "home---canada-scotia-csv-2026-07.csv")
+        self.assertEqual(csv_export_filename(tracker, config, "2026-07"), "home---canada-mybank-csv-2026-07.csv")
 
 
 if __name__ == "__main__":

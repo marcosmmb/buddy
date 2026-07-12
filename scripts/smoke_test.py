@@ -175,6 +175,13 @@ def main() -> None:
         assert "2026-07-11,Coffee,5.25" in exported_csv
         assert "Market run updated" in exported_csv
 
+        backup_response = client.get(f"/api/trackers/{tracker_id}/backup", headers=headers)
+        backup_response.raise_for_status()
+        backup = backup_response.json()
+        assert backup["schema_version"] == 1
+        assert backup["tracker"]["name"] == "Home"
+        assert backup["expenses"]
+
         delete_response = client.delete(f"/api/trackers/{tracker_id}/expenses/{expense_id}", headers=headers)
         delete_response.raise_for_status()
 
