@@ -7,7 +7,25 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 DATABASE_URL ?= sqlite:///./buddy.sqlite3
 ADMIN_EMAIL ?= admin@buddy.local
 
-.PHONY: sync up down restart build docker-image publish logs ps test smoke db-shell app-shell
+.DEFAULT_GOAL := help
+
+.PHONY: help sync up down restart build docker-image publish logs ps test smoke db-shell app-shell
+
+help:
+	@printf "Buddy commands:\n"
+	@printf "  make sync          Install dependencies with uv\n"
+	@printf "  make up            Build and start the local Docker Compose app\n"
+	@printf "  make down          Stop the Docker Compose app\n"
+	@printf "  make restart       Restart the Docker Compose app\n"
+	@printf "  make build         Build the Docker Compose image\n"
+	@printf "  make docker-image  Build local Docker images tagged with version and latest\n"
+	@printf "  make publish       Build and push multi-arch Docker images\n"
+	@printf "  make logs          Follow app logs\n"
+	@printf "  make ps            Show Compose service status\n"
+	@printf "  make test          Run the unit test suite\n"
+	@printf "  make smoke         Run the API smoke test\n"
+	@printf "  make db-shell      Open SQLite inside the running app container\n"
+	@printf "  make app-shell     Open a shell inside the running app container\n"
 
 sync:
 	$(UV) sync
