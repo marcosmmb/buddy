@@ -89,7 +89,7 @@ class BankingController(Controller):
             rows = (
                 session.query(BankConnection)
                 .options(joinedload(BankConnection.accounts))
-                .filter(BankConnection.tracker_id == tracker_id)
+                .filter(BankConnection.tracker_id == tracker_id, BankConnection.user_id == user.id)
                 .order_by(BankConnection.created_at.desc())
                 .all()
             )
@@ -118,10 +118,9 @@ class BankingController(Controller):
             tracker = get_tracker_for_user(session, tracker_id, user)
             if tracker is None:
                 raise HTTPException(status_code=404, detail="Tracker not found")
-            default_user_by_connection = {connection.id: connection.user for connection in tracker.bank_connections}
             return [
-                serialize_bank_transaction(transaction, default_user_by_connection.get(transaction.account.bank_connection_id, user))
-                for transaction in list_review_bank_transactions(session, tracker_id, days)
+                serialize_bank_transaction(transaction, user)
+                for transaction in list_review_bank_transactions(session, tracker_id, user, days)
             ]
 
     @post("/transactions/import")

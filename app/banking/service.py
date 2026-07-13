@@ -77,7 +77,11 @@ def load_bank_connection_for_user(session: Session, tracker_id: int, connection_
     connection = (
         session.query(BankConnection)
         .options(joinedload(BankConnection.accounts))
-        .filter(BankConnection.id == connection_id, BankConnection.tracker_id == tracker_id)
+        .filter(
+            BankConnection.id == connection_id,
+            BankConnection.tracker_id == tracker_id,
+            BankConnection.user_id == user.id,
+        )
         .one_or_none()
     )
     if connection is None:
@@ -89,7 +93,7 @@ def normalized_review_days(days: int) -> int:
     return min(max(days, 1), 730)
 
 
-def list_review_bank_transactions(session: Session, tracker_id: int, days: int) -> list[BankTransaction]:
+def list_review_bank_transactions(session: Session, tracker_id: int, user: User, days: int) -> list[BankTransaction]:
     cutoff = utcnow().date() - timedelta(days=normalized_review_days(days) - 1)
     return (
         session.query(BankTransaction)
@@ -98,6 +102,7 @@ def list_review_bank_transactions(session: Session, tracker_id: int, days: int) 
         .join(BankConnection)
         .filter(
             BankConnection.tracker_id == tracker_id,
+            BankConnection.user_id == user.id,
             BankTransaction.date >= cutoff,
             BankTransaction.amount > 0,
             BankTransaction.expense_id.is_(None),
@@ -121,6 +126,8 @@ def create_bank_connection(
     access_token = token_data["access_token"]
     item_id = token_data["item_id"]
     connection = session.query(BankConnection).filter(BankConnection.provider_item_id == item_id).one_or_none()
+    if connection is not None and connection.user_id != user.id:
+        raise HTTPException(status_code=409, detail="This bank account is already connected by another user")
     if connection is None:
         connection = BankConnection(
             tracker_id=tracker.id,
@@ -285,6 +292,8 @@ def import_bank_transactions(
         try:
             if transaction.account.connection.tracker_id != tracker.id:
                 raise ValueError("Transaction does not belong to this tracker")
+            if transaction.account.connection.user_id != user.id:
+                raise ValueError("Transaction does not belong to this user")
             if transaction.expense_id is not None or transaction.status == "imported":
                 raise ValueError("Transaction is already tracked")
             if transaction.status == "removed":

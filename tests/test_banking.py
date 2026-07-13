@@ -3,22 +3,34 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
+from litestar.exceptions import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.banking.service import create_bank_connection, import_bank_transactions, list_review_bank_transactions
+from app.banking.service import (
+    create_bank_connection,
+    import_bank_transactions,
+    list_review_bank_transactions,
+    load_bank_connection_for_user,
+)
 from app.models import Base, BankTransaction, Category, Expense, Tracker, TrackerMember, User
 from app.schemas import BankTransactionImportItem
 
 
 class FakePlaidClient:
+    def __init__(self, suffix: str = "test") -> None:
+        self.suffix = suffix
+
     def exchange_public_token(self, _public_token: str) -> dict[str, str]:
-        return {"access_token": "access-test", "item_id": "item-test"}
+        return {"access_token": f"access-{self.suffix}", "item_id": f"item-{self.suffix}"}
+
+    def transaction_id(self, name: str) -> str:
+        return f"txn-{name}" if self.suffix == "test" else f"txn-{name}-{self.suffix}"
 
     def get_accounts(self, _access_token: str) -> list[dict[str, object]]:
         return [
             {
-                "account_id": "account-test",
+                "account_id": f"account-{self.suffix}",
                 "name": "MyBank Chequing",
                 "mask": "1234",
                 "type": "depository",
@@ -31,8 +43,8 @@ class FakePlaidClient:
         return {
             "added": [
                 {
-                    "transaction_id": "txn-outgoing",
-                    "account_id": "account-test",
+                    "transaction_id": self.transaction_id("outgoing"),
+                    "account_id": f"account-{self.suffix}",
                     "date": "2026-07-10",
                     "authorized_date": "2026-07-09",
                     "name": "METRO",
@@ -42,8 +54,8 @@ class FakePlaidClient:
                     "pending": False,
                 },
                 {
-                    "transaction_id": "txn-inflow",
-                    "account_id": "account-test",
+                    "transaction_id": self.transaction_id("inflow"),
+                    "account_id": f"account-{self.suffix}",
                     "date": "2026-07-11",
                     "name": "Payroll",
                     "merchant_name": None,
@@ -79,7 +91,7 @@ class BankingServiceTests(unittest.TestCase):
             self.assertEqual(rows["txn-outgoing"].status, "ready")
             self.assertEqual(rows["txn-outgoing"].amount, Decimal("42.500"))
             self.assertEqual(rows["txn-inflow"].status, "ready")
-            review_rows = list_review_bank_transactions(session, tracker.id, 30)
+            review_rows = list_review_bank_transactions(session, tracker.id, user, 30)
             self.assertEqual([row.provider_transaction_id for row in review_rows], ["txn-outgoing"])
 
     def test_import_uses_connected_user_as_default_payer_and_requires_category(self) -> None:
@@ -120,7 +132,7 @@ class BankingServiceTests(unittest.TestCase):
             create_bank_connection(session, tracker, user, "public-test", "Mybank", FakePlaidClient())
             transaction = session.query(BankTransaction).filter(BankTransaction.provider_transaction_id == "txn-outgoing").one()
             transaction.status = "ignored"
-            review_rows = list_review_bank_transactions(session, tracker.id, 30)
+            review_rows = list_review_bank_transactions(session, tracker.id, user, 30)
             self.assertEqual([row.provider_transaction_id for row in review_rows], ["txn-outgoing"])
 
             result = import_bank_transactions(
@@ -132,7 +144,65 @@ class BankingServiceTests(unittest.TestCase):
 
             self.assertEqual(result, {"imported": 1, "skipped": []})
             self.assertEqual(transaction.status, "imported")
-            self.assertEqual(list_review_bank_transactions(session, tracker.id, 30), [])
+            self.assertEqual(list_review_bank_transactions(session, tracker.id, user, 30), [])
+
+    def test_bank_connections_and_transactions_are_private_per_user_even_for_admins(self) -> None:
+        with self.Session() as session:
+            marcos = User(id=1, email="marcos@example.test", name="Marcos", password_hash="x", default_currency="CAD")
+            gabriela = User(id=2, email="gabriela@example.test", name="Gabriela", password_hash="x", default_currency="CAD")
+            admin = User(id=3, email="admin@example.test", name="Admin", password_hash="x", default_currency="CAD", is_admin=True)
+            tracker = Tracker(id=1, name="Home", default_currency="CAD", created_by_id=1)
+            category = Category(id=1, tracker_id=1, name="Groceries", color="#f1b84b")
+            session.add_all([marcos, gabriela, admin, tracker, category])
+            session.add_all(
+                [
+                    TrackerMember(tracker_id=1, user_id=1, role="owner", share_percent=Decimal("50"), user=marcos, tracker=tracker),
+                    TrackerMember(tracker_id=1, user_id=2, role="member", share_percent=Decimal("50"), user=gabriela, tracker=tracker),
+                ]
+            )
+            session.flush()
+            marcos_connection = create_bank_connection(session, tracker, marcos, "public-marcos", "Marcos Bank", FakePlaidClient("marcos"))
+            gabriela_connection = create_bank_connection(session, tracker, gabriela, "public-gabriela", "Gabriela Bank", FakePlaidClient("gabriela"))
+            marcos_transaction = (
+                session.query(BankTransaction)
+                .join(BankTransaction.account)
+                .filter(BankTransaction.provider_transaction_id == "txn-outgoing-marcos")
+                .one()
+            )
+            gabriela_transaction = (
+                session.query(BankTransaction)
+                .join(BankTransaction.account)
+                .filter(BankTransaction.provider_transaction_id == "txn-outgoing-gabriela")
+                .one()
+            )
+
+            marcos_rows = list_review_bank_transactions(session, tracker.id, marcos, 30)
+            gabriela_rows = list_review_bank_transactions(session, tracker.id, gabriela, 30)
+            admin_rows = list_review_bank_transactions(session, tracker.id, admin, 30)
+
+            self.assertEqual({row.account.connection.user_id for row in marcos_rows}, {marcos.id})
+            self.assertEqual({row.account.connection.user_id for row in gabriela_rows}, {gabriela.id})
+            self.assertEqual(admin_rows, [])
+
+            self.assertEqual(load_bank_connection_for_user(session, tracker.id, marcos_connection.id, marcos).id, marcos_connection.id)
+            with self.assertRaises(HTTPException) as member_context:
+                load_bank_connection_for_user(session, tracker.id, gabriela_connection.id, marcos)
+            self.assertEqual(member_context.exception.status_code, 404)
+            with self.assertRaises(HTTPException) as admin_context:
+                load_bank_connection_for_user(session, tracker.id, gabriela_connection.id, admin)
+            self.assertEqual(admin_context.exception.status_code, 404)
+
+            result = import_bank_transactions(
+                session,
+                tracker,
+                marcos,
+                [BankTransactionImportItem(transaction_id=gabriela_transaction.id, category_id=category.id)],
+            )
+
+            self.assertEqual(result["imported"], 0)
+            self.assertEqual(result["skipped"][0]["reason"], "Transaction does not belong to this user")
+            self.assertIsNone(gabriela_transaction.expense_id)
+            self.assertIsNone(marcos_transaction.expense_id)
 
 
 if __name__ == "__main__":
