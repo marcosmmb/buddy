@@ -1,4 +1,10 @@
 const CURRENCY_FALLBACKS = ["USD", "CAD", "EUR", "GBP", "MXN", "BRL", "ARS", "CLP", "AUD", "JPY"];
+const GITHUB_URL = "https://github.com/marcosmmb/buddy";
+const TRACKER_TABS = ["overview", "expenses", "bank", "settings"];
+const APP_TABS = [...TRACKER_TABS, "user-settings", "admin"];
+const initialNavigation = new URLSearchParams(window.location.search);
+const requestedTab = initialNavigation.get("tab");
+const requestedTrackerId = Number(initialNavigation.get("tracker"));
 
 const state = {
   token: localStorage.getItem("buddy_token"),
@@ -6,9 +12,9 @@ const state = {
   users: [],
   currencies: CURRENCY_FALLBACKS,
   trackers: [],
-  trackerId: Number(localStorage.getItem("buddy_tracker_id")) || null,
+  trackerId: requestedTrackerId || Number(localStorage.getItem("buddy_tracker_id")) || null,
   sidebarCollapsed: localStorage.getItem("buddy_sidebar_collapsed") === "true",
-  tab: localStorage.getItem("buddy_tab") || "overview",
+  tab: APP_TABS.includes(requestedTab) ? requestedTab : localStorage.getItem("buddy_tab") || "overview",
   periodType: localStorage.getItem("buddy_period_type") || "month",
   period: localStorage.getItem("buddy_period") || new Date().toISOString().slice(0, 7),
   expenseMonth: localStorage.getItem("buddy_expense_month") || new Date().toISOString().slice(0, 7),
@@ -24,7 +30,18 @@ const state = {
   bankConfig: { plaid_configured: false, plaid_env: "sandbox" },
   bankConnections: [],
   bankTransactions: [],
-  bankLookbackDays: Number(localStorage.getItem("buddy_bank_lookback_days")) || 30,
+  bankLookbackDays: Number(localStorage.getItem("buddy_bank_lookback_days")) || 8,
+  bankDateSort: null,
+  syncingBankConnectionId: null,
+  expenseTableFilters: {
+    overview: { paidBy: "all", category: "all", type: "all" },
+    monthly: { paidBy: "all", category: "all", type: "all" },
+  },
+  expenseTableSort: {
+    overview: { key: null, direction: "asc" },
+    monthly: { key: null, direction: "asc" },
+  },
+  selectedExpenseIds: new Set(),
   csvModal: null,
   pendingLogin: null,
   twoFactorSetup: null,
@@ -50,6 +67,25 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function renderGithubIcon() {
+  return `
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+      <path fill="currentColor" d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.5v-1.9c-2.78.62-3.37-1.22-3.37-1.22-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.74-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.04A9.36 9.36 0 0 1 12 6.97c.85 0 1.7.12 2.5.35 1.9-1.32 2.74-1.04 2.74-1.04.55 1.4.2 2.44.1 2.7.64.71 1.03 1.62 1.03 2.74 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9v2.81c0 .28.18.6.69.5A10.15 10.15 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z" />
+    </svg>
+  `;
+}
+
+function tabHref(tab, trackerId = state.trackerId) {
+  const params = new URLSearchParams({ tab });
+  if (trackerId) params.set("tracker", String(trackerId));
+  return `/?${params.toString()}`;
+}
+
+function updateNavigationUrl(tab, trackerId = state.trackerId, replace = false) {
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({}, "", tabHref(tab, trackerId));
 }
 
 const SECTION_TOOLTIPS = {
@@ -410,6 +446,12 @@ function renderAuth() {
                   <button class="button primary" type="submit">Sign in</button>
                 </form>`
           }
+          <div class="auth-footer">
+            <a class="button auth-github-button" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer">
+              ${renderGithubIcon()}
+              View project on GitHub
+            </a>
+          </div>
         </div>
       </section>
     </main>
@@ -505,15 +547,11 @@ function renderApp() {
             .join("")}
         </div>
         <div class="tracker-list">
-          <button class="tracker-button ${state.tab === "user-settings" ? "active" : ""}" data-tab="user-settings">User settings</button>
-          ${state.user.is_admin ? `<button class="tracker-button ${state.tab === "admin" ? "active" : ""}" data-tab="admin">Admin</button>` : ""}
+          <a class="tracker-button ${state.tab === "user-settings" ? "active" : ""}" data-tab="user-settings" href="${tabHref("user-settings")}">User settings</a>
+          ${state.user.is_admin ? `<a class="tracker-button ${state.tab === "admin" ? "active" : ""}" data-tab="admin" href="${tabHref("admin")}">Admin</a>` : ""}
         </div>
         <div class="sidebar-footer">
-          <a class="icon-button github-link" href="https://github.com/marcosmmb/buddy" target="_blank" rel="noopener noreferrer" aria-label="Open Buddy on GitHub">
-            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
-              <path fill="currentColor" d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.5v-1.9c-2.78.62-3.37-1.22-3.37-1.22-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.74-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.04A9.36 9.36 0 0 1 12 6.97c.85 0 1.7.12 2.5.35 1.9-1.32 2.74-1.04 2.74-1.04.55 1.4.2 2.44.1 2.7.64.71 1.03 1.62 1.03 2.74 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9v2.81c0 .28.18.6.69.5A10.15 10.15 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z" />
-            </svg>
-          </a>
+          <a class="icon-button github-link" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer" aria-label="Open Buddy on GitHub">${renderGithubIcon()}</a>
           <button class="button ghost" id="logout-button">Sign out</button>
         </div>
       </aside>
@@ -537,11 +575,10 @@ function renderContent() {
   if (state.tab === "admin") return state.user.is_admin ? renderAdmin() : `<div class="empty">Admin access required.</div>`;
   if (state.tab === "user-settings") return renderUserSettings();
   if (!currentTracker()) return state.user.is_admin ? renderAdmin() : `<div class="empty">No trackers yet.</div>`;
-  const tabs = ["overview", "expenses", "bank", "settings"];
-  if (!tabs.includes(state.tab)) state.tab = "overview";
+  if (!TRACKER_TABS.includes(state.tab)) state.tab = "overview";
   return `
     <div class="tabs">
-      ${tabs.map((tab) => `<button class="tab ${state.tab === tab ? "active" : ""}" data-tab="${tab}">${label(tab)}</button>`).join("")}
+      ${TRACKER_TABS.map((tab) => `<a class="tab ${state.tab === tab ? "active" : ""}" data-tab="${tab}" href="${tabHref(tab)}">${label(tab)}</a>`).join("")}
     </div>
     ${state.tab === "overview" ? renderOverview() : ""}
     ${state.tab === "expenses" ? renderExpenses() : ""}
@@ -597,11 +634,6 @@ function renderMonthlySettlements() {
   const tracker = currentTracker();
   const balance = state.overview?.balance;
   const settlements = balance?.settlements || [];
-  const rows = settlements.map((row) => [
-    escapeHtml(row.from),
-    escapeHtml(row.to),
-    currency(row.amount, tracker.default_currency),
-  ]);
   return `
     <div class="panel stack">
       <div>
@@ -609,11 +641,18 @@ function renderMonthlySettlements() {
         <p class="muted">Based on shared expenses and the share split for ${escapeHtml(state.overview?.period || state.period)}.</p>
       </div>
       ${
-        rows.length
-          ? `<div class="table-scroll"><table>
-              <thead><tr><th>From</th><th>To</th><th>Amount</th></tr></thead>
-              <tbody>${rows.map((row) => `<tr><td>${row[0]}</td><td>${row[1]}</td><td class="amount">${row[2]}</td></tr>`).join("")}</tbody>
-            </table></div>`
+        settlements.length
+          ? `<div class="settlement-list">
+              ${settlements
+                .map(
+                  (row) => `
+                    <p class="settlement-line">
+                      <strong>${escapeHtml(row.from)}</strong> owes <strong>${escapeHtml(row.to)}</strong> <span class="amount">${currency(row.amount, tracker.default_currency)}</span>
+                    </p>
+                  `,
+                )
+                .join("")}
+            </div>`
           : `<div class="empty">All settled for this month.</div>`
       }
     </div>
@@ -745,7 +784,7 @@ function renderOverview() {
       ${state.periodType === "month" ? renderMonthlySettlements() : ""}
       ${renderMemberBreakdown(state.overview?.member_breakdown || [])}
       ${renderCategoryBreakdownTable(data)}
-      ${state.periodType === "month" ? `<div class="panel stack">${renderSectionTitle("Expenses this month")}${renderExpenseTable(state.overview?.expenses || [])}</div>` : ""}
+      ${state.periodType === "month" ? `<div class="panel stack">${renderSectionTitle("Expenses this month")}${renderExpenseTable(state.overview?.expenses || [], { context: "overview" })}</div>` : ""}
     </section>
   `;
 }
@@ -820,7 +859,7 @@ function renderExpenses() {
           ${renderSectionTitle("Expenses")}
           <button class="button small" id="bulk-delete-expenses">Delete selected</button>
         </div>
-        ${renderExpenseTable(state.expenses, true)}
+        ${renderExpenseTable(state.expenses, { editable: true, context: "monthly" })}
       </div>
       </div>
     </section>
@@ -828,19 +867,99 @@ function renderExpenses() {
   `;
 }
 
-function renderExpenseTable(expenses, editable = false) {
-  if (!expenses.length) return `<div class="empty">No expenses for this selection.</div>`;
+function expenseCategoryName(expense) {
+  return expense.category || state.categories.find((category) => category.id === expense.category_id)?.name || "";
+}
+
+function expenseSortValue(expense, key) {
+  if (key === "category") return expenseCategoryName(expense);
+  if (key === "paidBy") return expense.paid_by || "";
+  if (key === "type") return expense.is_shared ? "Shared" : "Individual";
+  if (key === "amount") return Number(expense.amount || 0);
+  return expense[key] || "";
+}
+
+function compareSortValues(left, right) {
+  if (typeof left === "number" && typeof right === "number") return left - right;
+  return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" });
+}
+
+function filteredAndSortedExpenses(expenses, context) {
+  const filters = state.expenseTableFilters[context];
+  const sort = state.expenseTableSort[context];
+  const filtered = expenses.filter((expense) => {
+    if (filters.paidBy !== "all" && String(expense.paid_by_id) !== filters.paidBy) return false;
+    if (filters.category !== "all" && String(expense.category_id) !== filters.category) return false;
+    if (filters.type === "shared" && !expense.is_shared) return false;
+    if (filters.type === "individual" && expense.is_shared) return false;
+    return true;
+  });
+  if (!sort.key) return filtered;
+  const direction = sort.direction === "desc" ? -1 : 1;
+  return filtered.sort((left, right) => {
+    const result = compareSortValues(expenseSortValue(left, sort.key), expenseSortValue(right, sort.key));
+    return result ? result * direction : Number(left.id || 0) - Number(right.id || 0);
+  });
+}
+
+function renderExpenseSortHeader(context, key, labelText) {
+  const sort = state.expenseTableSort[context];
+  const active = sort.key === key;
+  const icon = active ? (sort.direction === "asc" ? "↑" : "↓") : "↕";
+  const ariaSort = active ? (sort.direction === "asc" ? "ascending" : "descending") : "none";
+  const nextDirection = active && sort.direction === "asc" ? "descending" : "ascending";
+  return `
+    <th aria-sort="${ariaSort}">
+      <span class="sortable-heading">
+        <span>${escapeHtml(labelText)}</span>
+        <button class="sort-button ${active ? "active" : ""}" type="button" data-expense-sort="${context}" data-sort-key="${key}" aria-label="Sort ${escapeHtml(labelText)} ${nextDirection}" title="Sort ${escapeHtml(labelText)} ${nextDirection}">
+          <span aria-hidden="true">${icon}</span>
+        </button>
+      </span>
+    </th>
+  `;
+}
+
+function renderExpenseTable(expenses, { editable = false, context = "overview" } = {}) {
+  const filters = state.expenseTableFilters[context];
+  const visibleExpenses = filteredAndSortedExpenses(expenses, context);
   const duplicates = expenseDuplicateMap(expenses);
   return `
-    <div class="table-scroll">
-      <table>
-        <thead><tr>${editable ? "<th></th>" : ""}<th>Date</th><th>Category</th><th>Paid by</th><th>Description</th><th>Type</th><th>Amount</th>${editable ? "<th></th>" : ""}</tr></thead>
+    <div class="expense-table-toolbar">
+      <div class="expense-filter-controls">
+        <label class="compact-label">Who paid
+          <select data-expense-filter="${context}" data-filter-key="paidBy">
+            <option value="all">All payers</option>
+            ${(currentTracker()?.members || []).map((member) => `<option value="${member.user_id}" ${filters.paidBy === String(member.user_id) ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="compact-label">Category
+          <select data-expense-filter="${context}" data-filter-key="category">
+            <option value="all">All categories</option>
+            ${state.categories.map((category) => `<option value="${category.id}" ${filters.category === String(category.id) ? "selected" : ""}>${escapeHtml(category.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="compact-label">Type
+          <select data-expense-filter="${context}" data-filter-key="type">
+            <option value="all" ${filters.type === "all" ? "selected" : ""}>All types</option>
+            <option value="shared" ${filters.type === "shared" ? "selected" : ""}>Shared</option>
+            <option value="individual" ${filters.type === "individual" ? "selected" : ""}>Individual</option>
+          </select>
+        </label>
+      </div>
+      <span class="tiny-line">Showing ${visibleExpenses.length} of ${expenses.length}</span>
+    </div>
+    ${
+      visibleExpenses.length
+        ? `<div class="table-scroll">
+      <table class="expense-table">
+        <thead><tr>${editable ? "<th></th>" : ""}${renderExpenseSortHeader(context, "date", "Date")}${renderExpenseSortHeader(context, "category", "Category")}${renderExpenseSortHeader(context, "paidBy", "Paid by")}${renderExpenseSortHeader(context, "description", "Description")}${renderExpenseSortHeader(context, "type", "Type")}${renderExpenseSortHeader(context, "amount", "Amount")}${editable ? "<th></th>" : ""}</tr></thead>
         <tbody>
-          ${expenses
+          ${visibleExpenses
             .map(
               (expense) => `
               <tr data-expense-row="${expense.id}" class="${duplicates.get(expense.id) ? "duplicate-row" : ""}">
-                ${editable ? `<td><input class="compact-check" type="checkbox" data-expense-select="${expense.id}" /></td>` : ""}
+                ${editable ? `<td><input class="compact-check" type="checkbox" data-expense-select="${expense.id}" ${state.selectedExpenseIds.has(expense.id) ? "checked" : ""} /></td>` : ""}
                 <td>${editable ? `<input class="table-input" name="date" type="date" value="${escapeHtml(expense.date)}" />` : escapeHtml(expense.date)}</td>
                 <td>${
                   editable
@@ -877,7 +996,9 @@ function renderExpenseTable(expenses, editable = false) {
             .join("")}
         </tbody>
       </table>
-    </div>
+    </div>`
+        : `<div class="empty expense-table-empty">${expenses.length ? "No expenses match these filters." : "No expenses for this selection."}</div>`
+    }
   `;
 }
 
@@ -974,9 +1095,35 @@ function renderBankTwoFactorModal() {
   `;
 }
 
+function sortedBankTransactions(transactions) {
+  if (!state.bankDateSort) return [...transactions];
+  const direction = state.bankDateSort === "desc" ? -1 : 1;
+  return [...transactions].sort((left, right) => {
+    const result = compareSortValues(left.date || "", right.date || "");
+    return result ? result * direction : Number(left.id || 0) - Number(right.id || 0);
+  });
+}
+
+function renderBankDateSortHeader() {
+  const active = Boolean(state.bankDateSort);
+  const icon = !active ? "↕" : state.bankDateSort === "asc" ? "↑" : "↓";
+  const ariaSort = !active ? "none" : state.bankDateSort === "asc" ? "ascending" : "descending";
+  const nextDirection = state.bankDateSort === "asc" ? "descending" : "ascending";
+  return `
+    <th aria-sort="${ariaSort}">
+      <span class="sortable-heading">
+        <span>Date</span>
+        <button class="sort-button ${active ? "active" : ""}" id="bank-date-sort" type="button" aria-label="Sort date ${nextDirection}" title="Sort date ${nextDirection}">
+          <span aria-hidden="true">${icon}</span>
+        </button>
+      </span>
+    </th>
+  `;
+}
+
 function renderBankImport() {
   const tracker = currentTracker();
-  const rows = state.bankTransactions || [];
+  const rows = sortedBankTransactions(state.bankTransactions || []);
   return `
     <section class="stack">
       <div class="panel stack">
@@ -1008,7 +1155,11 @@ function renderBankImport() {
                         <td>${connection.accounts.map((account) => `${escapeHtml(account.name)} ${account.mask ? `**${escapeHtml(account.mask)}` : ""}`).join("<br />")}</td>
                         <td>${escapeHtml(connection.status)}${connection.error_message ? `<div class="tiny">${escapeHtml(connection.error_message)}</div>` : ""}</td>
                         <td>${connection.last_synced_at ? escapeHtml(connection.last_synced_at.slice(0, 19).replace("T", " ")) : "Never"}</td>
-                        <td><button class="button small" data-sync-bank="${connection.id}">Sync</button></td>
+                        <td>
+                          <button class="button small" data-sync-bank="${connection.id}" ${state.syncingBankConnectionId !== null ? "disabled" : ""}>
+                            ${state.syncingBankConnectionId === connection.id ? `<span class="spinner" aria-hidden="true"></span>Syncing…` : "Sync"}
+                          </button>
+                        </td>
                       </tr>
                     `,
                     )
@@ -1034,32 +1185,32 @@ function renderBankImport() {
         ${
           rows.length
             ? `<div class="table-scroll"><table>
-                <thead><tr><th></th><th>Date</th><th>Description</th><th>Account</th><th>Amount</th><th>Category</th><th>Paid by</th><th>Type</th></tr></thead>
+                <thead><tr><th></th>${renderBankDateSortHeader()}<th>Description</th><th>Account</th><th>Amount</th><th>Category</th><th>Paid by</th><th>Type</th></tr></thead>
                 <tbody>
                   ${rows
                     .map(
                       (row) => `
                       <tr data-bank-transaction="${row.id}">
-                        <td><input class="compact-check" type="checkbox" data-bank-select="${row.id}" /></td>
+                        <td><input class="compact-check" type="checkbox" data-bank-select="${row.id}" ${row._reviewSelected ? "checked" : ""} /></td>
                         <td>${escapeHtml(row.date)}</td>
-                        <td><input class="table-input" name="description" value="${escapeHtml(row.description)}" /></td>
-                        <td>${escapeHtml(row.institution_name)}<div class="tiny">${escapeHtml(row.account)}</div></td>
+                        <td><input class="table-input" name="description" value="${escapeHtml(row._reviewDescription ?? row.description)}" /></td>
+                        <td>${escapeHtml(row.institution_name)}<div class="tiny bank-account-name">${escapeHtml(row.account)}</div></td>
                         <td class="amount">${currency(row.amount, row.currency)}</td>
                         <td>
                           <select class="table-input" name="category_id">
                             <option value="">Choose category</option>
-                            ${state.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}
+                            ${state.categories.map((category) => `<option value="${category.id}" ${category.id === row._reviewCategoryId ? "selected" : ""}>${escapeHtml(category.name)}</option>`).join("")}
                           </select>
                         </td>
                         <td>
                           <select class="table-input" name="paid_by_id">
-                            ${tracker.members.map((member) => `<option value="${member.user_id}" ${member.user_id === row.default_paid_by_id ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
+                            ${tracker.members.map((member) => `<option value="${member.user_id}" ${member.user_id === (row._reviewPaidById ?? row.default_paid_by_id) ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
                           </select>
                         </td>
                         <td>
                           <select class="table-input" name="is_shared">
-                            <option value="false" selected>Individual</option>
-                            <option value="true">Shared</option>
+                            <option value="false" ${row._reviewIsShared === true ? "" : "selected"}>Individual</option>
+                            <option value="true" ${row._reviewIsShared === true ? "selected" : ""}>Shared</option>
                           </select>
                         </td>
                       </tr>
@@ -1333,17 +1484,48 @@ function bindAppEvents() {
     button.addEventListener("click", async () => {
       state.trackerId = Number(button.dataset.tracker);
       state.tab = "overview";
+      state.selectedExpenseIds.clear();
       localStorage.setItem("buddy_tracker_id", String(state.trackerId));
       localStorage.setItem("buddy_tab", state.tab);
+      updateNavigationUrl(state.tab, state.trackerId);
       await refresh();
     });
   });
   document.querySelectorAll("[data-tab]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", (event) => {
+      const opensElsewhere = event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+      if (button.tagName === "A" && opensElsewhere) return;
+      if (button.tagName === "A") event.preventDefault();
       state.tab = button.dataset.tab;
       localStorage.setItem("buddy_tab", state.tab);
+      updateNavigationUrl(state.tab);
       renderApp();
     });
+  });
+  document.querySelectorAll("[data-expense-filter]").forEach((select) => {
+    select.addEventListener("change", () => {
+      const filters = state.expenseTableFilters[select.dataset.expenseFilter];
+      if (!filters) return;
+      filters[select.dataset.filterKey] = select.value;
+      renderApp();
+    });
+  });
+  document.querySelectorAll("[data-expense-sort]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const sort = state.expenseTableSort[button.dataset.expenseSort];
+      if (!sort) return;
+      if (sort.key === button.dataset.sortKey) sort.direction = sort.direction === "asc" ? "desc" : "asc";
+      else {
+        sort.key = button.dataset.sortKey;
+        sort.direction = "asc";
+      }
+      renderApp();
+    });
+  });
+  document.querySelector("#bank-date-sort")?.addEventListener("click", () => {
+    captureBankReviewState();
+    state.bankDateSort = state.bankDateSort === "asc" ? "desc" : "asc";
+    renderApp();
   });
   document.querySelector("#period-type")?.addEventListener("change", async (event) => {
     state.periodType = event.target.value;
@@ -1427,6 +1609,13 @@ function bindForms() {
   document.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/admin/users/${button.dataset.deleteUser}`, { method: "DELETE" }))));
   document.querySelectorAll("[data-delete-category]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/categories/${button.dataset.deleteCategory}`, { method: "DELETE" }))));
   document.querySelectorAll("[data-delete-csv-config]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/csv-configs/${button.dataset.deleteCsvConfig}`, { method: "DELETE" }))));
+  document.querySelectorAll("[data-expense-select]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const expenseId = Number(input.dataset.expenseSelect);
+      if (input.checked) state.selectedExpenseIds.add(expenseId);
+      else state.selectedExpenseIds.delete(expenseId);
+    });
+  });
   document.querySelectorAll("[data-expense-row]").forEach((row) => {
     row.querySelectorAll("input, select").forEach((field) => {
       if (field.matches("[data-expense-select]")) return;
@@ -1458,6 +1647,21 @@ async function refresh() {
     state.error = error.message;
   }
   renderApp();
+}
+
+async function handleNavigationChange() {
+  const params = new URLSearchParams(window.location.search);
+  const nextTab = APP_TABS.includes(params.get("tab")) ? params.get("tab") : "overview";
+  const nextTrackerId = Number(params.get("tracker")) || state.trackerId;
+  const trackerChanged = nextTrackerId !== state.trackerId;
+  state.tab = nextTab;
+  state.trackerId = nextTrackerId;
+  if (trackerChanged) state.selectedExpenseIds.clear();
+  localStorage.setItem("buddy_tab", state.tab);
+  if (state.trackerId) localStorage.setItem("buddy_tracker_id", String(state.trackerId));
+  if (!state.user) return;
+  if (trackerChanged) await refresh();
+  else renderApp();
 }
 
 async function logout() {
@@ -1663,6 +1867,20 @@ function setAutosaveStatus(expenseId, text, tone = "") {
 }
 
 function scheduleExpenseAutosave(expenseId) {
+  const payload = expensePayloadFromRow(expenseId);
+  const category = state.categories.find((item) => item.id === payload.category_id);
+  const payer = currentTracker()?.members.find((member) => member.user_id === payload.paid_by_id);
+  state.expenses = state.expenses.map((expense) =>
+    expense.id === expenseId
+      ? {
+          ...expense,
+          ...payload,
+          category: category?.name || expense.category,
+          category_color: category?.color || expense.category_color,
+          paid_by: payer?.name || expense.paid_by,
+        }
+      : expense,
+  );
   clearTimeout(autosaveTimers.get(expenseId));
   setAutosaveStatus(expenseId, "Saving...");
   autosaveTimers.set(
@@ -1672,7 +1890,7 @@ function scheduleExpenseAutosave(expenseId) {
       try {
         const updated = await api(`/api/trackers/${tracker.id}/expenses/${expenseId}`, {
           method: "PUT",
-          body: JSON.stringify(expensePayloadFromRow(expenseId)),
+          body: JSON.stringify(payload),
         });
         state.expenses = state.expenses.map((expense) => (expense.id === expenseId ? updated : expense));
         const total = document.querySelector("#expense-month-total");
@@ -1699,12 +1917,14 @@ async function bulkDeleteExpenses() {
     renderApp();
     return;
   }
-  await mutate(() =>
-    api(`/api/trackers/${tracker.id}/expenses/bulk-delete`, {
+  await mutate(async () => {
+    const result = await api(`/api/trackers/${tracker.id}/expenses/bulk-delete`, {
       method: "POST",
       body: JSON.stringify({ expense_ids: expenseIds }),
-    }),
-  );
+    });
+    expenseIds.forEach((expenseId) => state.selectedExpenseIds.delete(expenseId));
+    return result;
+  });
 }
 
 async function submitCsvConfig(event) {
@@ -1985,7 +2205,14 @@ async function syncBankConnection(connectionId) {
   const tracker = currentTracker();
   syncBankLookbackDaysFromInput();
   const params = new URLSearchParams({ days: String(state.bankLookbackDays) });
-  await mutate(() => api(`/api/trackers/${tracker.id}/bank/connections/${connectionId}/sync?${params}`, { method: "POST" }));
+  state.syncingBankConnectionId = connectionId;
+  renderApp();
+  try {
+    await mutate(() => api(`/api/trackers/${tracker.id}/bank/connections/${connectionId}/sync?${params}`, { method: "POST" }));
+  } finally {
+    state.syncingBankConnectionId = null;
+    renderApp();
+  }
 }
 
 async function updateBankLookbackDays(event) {
@@ -2002,7 +2229,19 @@ function syncBankLookbackDaysFromInput() {
 }
 
 function normalizeBankLookbackDays(value) {
-  return Math.min(Math.max(Number(value) || 30, 1), 730);
+  return Math.min(Math.max(Number(value) || 8, 1), 730);
+}
+
+function captureBankReviewState() {
+  document.querySelectorAll("[data-bank-transaction]").forEach((element) => {
+    const transaction = state.bankTransactions.find((row) => row.id === Number(element.dataset.bankTransaction));
+    if (!transaction) return;
+    transaction._reviewSelected = Boolean(element.querySelector("[data-bank-select]")?.checked);
+    transaction._reviewDescription = element.querySelector('[name="description"]')?.value ?? transaction.description;
+    transaction._reviewCategoryId = Number(element.querySelector('[name="category_id"]')?.value) || null;
+    transaction._reviewPaidById = Number(element.querySelector('[name="paid_by_id"]')?.value) || transaction.default_paid_by_id;
+    transaction._reviewIsShared = element.querySelector('[name="is_shared"]')?.value === "true";
+  });
 }
 
 function selectedBankTransactionRows() {
@@ -2055,4 +2294,5 @@ async function mutate(operation) {
   }
 }
 
+window.addEventListener("popstate", handleNavigationChange);
 bootstrap();

@@ -129,8 +129,13 @@ button:disabled {
 }
 
 .user-email,
-.tiny {
+.sidebar .tiny {
   color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+}
+
+.tiny {
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -150,6 +155,7 @@ button:disabled {
 }
 
 .tracker-button {
+  display: block;
   width: 100%;
   text-align: left;
   color: #e9edf4;
@@ -157,6 +163,7 @@ button:disabled {
   border-radius: 8px;
   padding: 10px 12px;
   overflow: hidden;
+  text-decoration: none;
 }
 
 .sidebar-collapsed .sidebar {
@@ -321,6 +328,18 @@ h3 {
   border-left: 1px solid var(--line);
 }
 
+.auth-footer {
+  margin-top: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.auth-github-button {
+  width: 100%;
+  color: var(--ink);
+  text-decoration: none;
+}
+
 .toolbar,
 .row,
 .form-row,
@@ -455,11 +474,14 @@ h3 {
 }
 
 .tab {
+  display: inline-flex;
+  align-items: center;
   background: transparent;
   padding: 12px 4px;
   color: var(--muted);
   font-weight: 800;
   border-bottom: 3px solid transparent;
+  text-decoration: none;
   white-space: nowrap;
 }
 
@@ -498,6 +520,26 @@ label {
 
 .table-header .compact-label {
   min-width: 180px;
+}
+
+.expense-table-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.expense-filter-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex: 1 1 560px;
+  flex-wrap: wrap;
+}
+
+.expense-filter-controls .compact-label {
+  flex: 1 1 160px;
 }
 
 input,
@@ -586,9 +628,54 @@ th {
   text-transform: uppercase;
 }
 
+.sortable-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.sort-button {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.sort-button:hover,
+.sort-button:focus-visible,
+.sort-button.active {
+  border-color: var(--accent);
+  background: rgba(241, 184, 75, 0.16);
+  color: var(--accent-strong);
+  outline: none;
+}
+
 .amount {
   font-variant-numeric: tabular-nums;
   font-weight: 800;
+}
+
+.settlement-list {
+  display: grid;
+  gap: 10px;
+}
+
+.settlement-line {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  font-size: 16px;
+  line-height: 1.45;
 }
 
 .tiny-line {
@@ -670,6 +757,30 @@ body[data-theme="dark"] .duplicate-pill {
   overflow: auto;
   max-height: 55vh;
   -webkit-overflow-scrolling: touch;
+}
+
+.expense-table-empty {
+  min-height: 120px;
+}
+
+.bank-account-name {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .positive {

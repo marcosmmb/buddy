@@ -96,7 +96,7 @@ class BankingController(Controller):
             return [serialize_bank_connection(connection) for connection in rows]
 
     @post("/connections/{connection_id:int}/sync")
-    def sync_connection(self, request: Request, tracker_id: int, connection_id: int, days: int = 30) -> dict[str, Any]:
+    def sync_connection(self, request: Request, tracker_id: int, connection_id: int, days: int = 8) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
             connection = load_bank_connection_for_user(session, tracker_id, connection_id, user)
@@ -112,7 +112,7 @@ class BankingController(Controller):
             return {"status": "ok"}
 
     @get("/transactions")
-    def transactions(self, request: Request, tracker_id: int, days: int = 30) -> list[dict[str, Any]]:
+    def transactions(self, request: Request, tracker_id: int, days: int = 8) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
             tracker = get_tracker_for_user(session, tracker_id, user)
