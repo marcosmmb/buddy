@@ -148,6 +148,24 @@ function currentMember() {
   return tracker?.members.find((member) => member.user_id === state.user?.id) || null;
 }
 
+function isCurrentUserRow(row) {
+  const userId = row?.user_id ?? row?.id;
+  if (userId !== undefined && userId !== null) return Number(userId) === Number(state.user?.id);
+  const name = row?.name ?? row?.person;
+  return Boolean(name && name === (currentMember()?.name || state.user?.name));
+}
+
+function prioritizeCurrentUserRows(rows) {
+  return [...(rows || [])]
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => Number(isCurrentUserRow(right.row)) - Number(isCurrentUserRow(left.row)) || left.index - right.index)
+    .map(({ row }) => row);
+}
+
+function renderCurrentUserBadge() {
+  return '<span class="current-user-badge">You</span>';
+}
+
 function canManageTracker() {
   return Boolean(state.user?.is_admin || currentMember()?.role === "owner");
 }
@@ -304,20 +322,29 @@ function memberBreakdownFromExpenses(expenses = state.expenses) {
 
 function renderMemberBreakdown(rows, emptyText = "No expenses for this selection.") {
   const tracker = currentTracker();
+  const prioritizedRows = prioritizeCurrentUserRows(rows);
   return renderTable(
     "Member breakdown",
     ["Member", "Paid shared", "Paid individual", "Paid total", "Shared expenses adjusted", "Individual expenses adjusted", "Total expenses adjusted"],
-    (rows || []).map((row) => [
-      escapeHtml(row.name),
-      currency(row.paid_shared, tracker.default_currency),
-      currency(row.paid_individual, tracker.default_currency),
-      currency(row.paid_total, tracker.default_currency),
-      currency(row.responsibility_shared, tracker.default_currency),
-      currency(row.responsibility_individual, tracker.default_currency),
-      currency(row.responsibility_total, tracker.default_currency),
-    ]),
+    prioritizedRows.map((row) => {
+      const current = isCurrentUserRow(row);
+      const value = (amount) => {
+        const formatted = currency(amount, tracker.default_currency);
+        return current ? `<strong class="current-user-value">${formatted}</strong>` : formatted;
+      };
+      return [
+        `${escapeHtml(row.name)}${current ? renderCurrentUserBadge() : ""}`,
+        value(row.paid_shared),
+        value(row.paid_individual),
+        value(row.paid_total),
+        value(row.responsibility_shared),
+        value(row.responsibility_individual),
+        value(row.responsibility_total),
+      ];
+    }),
     true,
     emptyText,
+    { rowClasses: prioritizedRows.map((row) => (isCurrentUserRow(row) ? "current-user-row" : "")) },
   );
 }
 
@@ -670,15 +697,16 @@ function renderBarChart(title, rows, labelKey = "name", valueKey = "total") {
 function renderBarChartRows(rows, labelKey = "name", valueKey = "total") {
   if (!rows?.length) return `<div class="empty">No chart data for this selection.</div>`;
   const max = Math.max(...rows.map((row) => Math.abs(Number(row[valueKey] || 0))));
+  const prioritizedRows = rows.some((row) => row.is_current_user) ? prioritizeCurrentUserRows(rows) : rows;
   return `
     <div class="bar-chart">
-      ${rows
+      ${prioritizedRows
         .map(
           (row) => `
-          <div class="bar-row">
-            <div class="bar-label">${escapeHtml(row[labelKey])}</div>
+          <div class="bar-row ${row.is_current_user ? "current-user-bar-row" : ""}">
+            <div class="bar-label">${escapeHtml(row[labelKey])}${row.is_current_user ? renderCurrentUserBadge() : ""}</div>
             <div class="bar-track"><div class="bar-fill" style="width: ${barWidth(row[valueKey], max)}%; ${row.color ? `background: ${escapeHtml(row.color)};` : ""}"></div></div>
-            <div class="bar-value">${currency(row[valueKey])}</div>
+            <div class="bar-value ${row.is_current_user ? "current-user-value" : ""}">${currency(row[valueKey])}</div>
           </div>
         `,
         )
@@ -690,7 +718,11 @@ function renderBarChartRows(rows, labelKey = "name", valueKey = "total") {
 function renderMonthlySettlements() {
   const tracker = currentTracker();
   const balance = state.overview?.balance;
-  const settlements = balance?.settlements || [];
+  const currentUserId = Number(state.user?.id);
+  const settlementIncludesCurrentUser = (row) => Number(row.from_user_id) === currentUserId || Number(row.to_user_id) === currentUserId;
+  const settlements = [...(balance?.settlements || [])].sort(
+    (left, right) => Number(settlementIncludesCurrentUser(right)) - Number(settlementIncludesCurrentUser(left)),
+  );
   return `
     <div class="panel stack">
       <div>
@@ -702,11 +734,15 @@ function renderMonthlySettlements() {
           ? `<div class="settlement-list">
               ${settlements
                 .map(
-                  (row) => `
-                    <p class="settlement-line">
-                      <strong>${escapeHtml(row.from)}</strong> owes <strong>${escapeHtml(row.to)}</strong> <span class="amount">${currency(row.amount, tracker.default_currency)}</span>
+                  (row) => {
+                    const fromCurrent = Number(row.from_user_id) === currentUserId;
+                    const toCurrent = Number(row.to_user_id) === currentUserId;
+                    return `
+                    <p class="settlement-line ${fromCurrent || toCurrent ? "current-user-emphasis" : ""}">
+                      <strong>${escapeHtml(row.from)}${fromCurrent ? renderCurrentUserBadge() : ""}</strong> owes <strong>${escapeHtml(row.to)}${toCurrent ? renderCurrentUserBadge() : ""}</strong> <span class="amount ${fromCurrent || toCurrent ? "current-user-value" : ""}">${currency(row.amount, tracker.default_currency)}</span>
                     </p>
-                  `,
+                  `;
+                  },
                 )
                 .join("")}
             </div>`
@@ -720,7 +756,7 @@ function renderCategoryBreakdownTable(data) {
   const byPerson = new Map();
   for (const row of data.by_person_category || []) {
     if (!byPerson.has(row.category)) byPerson.set(row.category, []);
-    byPerson.get(row.category).push(`${escapeHtml(row.person)}: ${currency(row.total)}`);
+    byPerson.get(row.category).push(row);
   }
   const rows = sortCategoryRows(data.by_category || [], state.categoryBreakdownSort);
   return `
@@ -745,7 +781,16 @@ function renderCategoryBreakdownTable(data) {
                     <tr>
                       <td><span class="swatch" style="background:${escapeHtml(row.color || "#f1b84b")}"></span>${escapeHtml(row.name)}</td>
                       <td>${currency(row.total)}</td>
-                      <td>${byPerson.get(row.name)?.join("<br />") || ""}</td>
+                      <td>
+                        <div class="person-total-list">
+                          ${prioritizeCurrentUserRows(byPerson.get(row.name) || [])
+                            .map((personRow) => {
+                              const current = isCurrentUserRow(personRow);
+                              return `<div class="person-total ${current ? "current-user-emphasis" : ""}"><span>${escapeHtml(personRow.person)}${current ? renderCurrentUserBadge() : ""}</span><strong class="${current ? "current-user-value" : ""}">${currency(personRow.total)}</strong></div>`;
+                            })
+                            .join("")}
+                        </div>
+                      </td>
                     </tr>
                   `,
                   )
@@ -794,7 +839,11 @@ function renderDuplicateExpenseSection(expenses) {
 
 function renderOverview() {
   const data = state.overview?.summary || {};
-  const payerRows = data.by_person?.map((row) => ({ name: row.name, total: row.total })) || [];
+  const payerRows = prioritizeCurrentUserRows(data.by_person || []).map((row) => ({
+    name: row.name,
+    total: row.total,
+    is_current_user: isCurrentUserRow(row),
+  }));
   const categoryRows = categoryRowsForSelectedMember(data);
   return `
     <section class="stack">
@@ -848,6 +897,7 @@ function renderOverview() {
 
 function renderExpenses() {
   const tracker = currentTracker();
+  const monthlyShares = prioritizeCurrentUserRows(state.monthlyShares.shares || []);
   return `
     <section class="stack">
       <div class="toolbar">
@@ -864,17 +914,20 @@ function renderExpenses() {
         ${
           canManageTracker()
             ? `<form id="monthly-shares-form" class="stack">
-                ${state.monthlyShares.shares
+                ${monthlyShares
                   .map(
-                    (share) => `
-                    <div class="row between">
+                    (share) => {
+                      const current = isCurrentUserRow(share);
+                      return `
+                    <div class="row between member-number-row ${current ? "current-user-emphasis" : ""}">
                       <div>
-                        <strong>${escapeHtml(share.name)}</strong>
+                        <strong>${escapeHtml(share.name)}${current ? renderCurrentUserBadge() : ""}</strong>
                         <div class="muted">Default ${Number(share.default_share_percent).toFixed(2)}%${share.has_override ? " · Custom for this month" : ""}</div>
                       </div>
-                      <label style="max-width: 170px">Month share %<input type="number" step="0.01" min="0" max="100" name="monthly_share_${share.user_id}" value="${share.share_percent ?? share.default_share_percent}" /></label>
+                      <label style="max-width: 170px">Month share %<input class="${current ? "current-user-input" : ""}" type="number" step="0.01" min="0" max="100" name="monthly_share_${share.user_id}" value="${share.share_percent ?? share.default_share_percent}" /></label>
                     </div>
-                  `,
+                  `;
+                    },
                   )
                   .join("")}
                 <button class="button primary" type="submit">Save monthly shares</button>
@@ -1288,6 +1341,7 @@ function renderBankImport() {
 
 function renderTrackerSettings() {
   const tracker = currentTracker();
+  const prioritizedUsers = prioritizeCurrentUserRows(state.users);
   return `
     <section class="grid two">
       <div class="panel stack" style="grid-column: 1 / -1">
@@ -1310,13 +1364,14 @@ function renderTrackerSettings() {
         ${
           canManageTracker()
             ? `<form id="members-form" class="stack">
-                ${state.users
+                ${prioritizedUsers
                   .map((user) => {
                     const member = tracker.members.find((item) => item.user_id === user.id);
+                    const current = isCurrentUserRow(user);
                     return `
-                      <div class="row between">
-                        <label class="check-row"><input type="checkbox" name="member_${user.id}" ${member ? "checked" : ""} /> ${escapeHtml(user.name)}</label>
-                        <label style="max-width: 120px">Share %<input type="number" step="0.01" min="0" max="100" name="share_${user.id}" value="${member?.share_percent ?? 0}" /></label>
+                      <div class="row between member-number-row ${current ? "current-user-emphasis" : ""}">
+                        <label class="check-row"><input type="checkbox" name="member_${user.id}" ${member ? "checked" : ""} /> ${escapeHtml(user.name)}${current ? renderCurrentUserBadge() : ""}</label>
+                        <label style="max-width: 120px">Share %<input class="${current ? "current-user-input" : ""}" type="number" step="0.01" min="0" max="100" name="share_${user.id}" value="${member?.share_percent ?? 0}" /></label>
                         <label style="max-width: 120px">Role<select name="role_${user.id}"><option value="member" ${member?.role !== "owner" ? "selected" : ""}>Member</option><option value="owner" ${member?.role === "owner" ? "selected" : ""}>Owner</option></select></label>
                       </div>
                     `;
@@ -1513,7 +1568,7 @@ function renderCreateTracker() {
   `;
 }
 
-function renderTable(title, headers, rows, raw = false, emptyText = "No data for this selection.") {
+function renderTable(title, headers, rows, raw = false, emptyText = "No data for this selection.", options = {}) {
   const mobileCardLabels = {
     "Active accounts": "Account",
     "Member breakdown": "Member",
@@ -1528,7 +1583,7 @@ function renderTable(title, headers, rows, raw = false, emptyText = "No data for
         rows.length
           ? `<div class="table-scroll"><table data-mobile-card-label="${escapeHtml(mobileCardLabel)}">
                 <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
-                <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${raw ? cell : escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
+                <tbody>${rows.map((row, index) => `<tr class="${escapeHtml(options.rowClasses?.[index] || "")}">${row.map((cell) => `<td>${raw ? cell : escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
               </table></div>`
           : `<div class="empty">${escapeHtml(emptyText)}</div>`
       }
@@ -1982,7 +2037,10 @@ function scheduleExpenseAutosave(expenseId) {
         const sharedTotal = document.querySelector("#expense-month-shared-total");
         if (sharedTotal) sharedTotal.textContent = currency(monthSharedTotal(), tracker.default_currency);
         const memberBreakdown = document.querySelector("#member-month-breakdown");
-        if (memberBreakdown) memberBreakdown.innerHTML = renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.");
+        if (memberBreakdown) {
+          memberBreakdown.innerHTML = renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.");
+          prepareResponsiveTables();
+        }
         setAutosaveStatus(expenseId, "Saved", "positive");
       } catch (error) {
         state.error = error.message;

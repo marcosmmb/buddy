@@ -678,6 +678,57 @@ th {
   line-height: 1.45;
 }
 
+.current-user-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid rgba(217, 155, 37, 0.32);
+  border-radius: 999px;
+  background: rgba(241, 184, 75, 0.12);
+  color: #8a5a00;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+.current-user-value {
+  color: inherit;
+  font-weight: 850;
+}
+
+.current-user-row {
+  background: rgba(241, 184, 75, 0.055);
+}
+
+.current-user-row > td:first-child {
+  box-shadow: inset 3px 0 0 rgba(217, 155, 37, 0.7);
+}
+
+.current-user-emphasis {
+  border: 1px solid var(--line);
+  border-left: 3px solid rgba(217, 155, 37, 0.7);
+  background: rgba(241, 184, 75, 0.055);
+}
+
+.current-user-input {
+  border-color: rgba(217, 155, 37, 0.65);
+  box-shadow: 0 0 0 1px rgba(241, 184, 75, 0.12);
+  font-weight: 800;
+}
+
+.member-number-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.member-number-row:last-child {
+  border-bottom: 0;
+}
+
 .tiny-line {
   color: var(--muted);
   font-size: 12px;
@@ -1006,9 +1057,26 @@ body[data-theme="dark"] .button.primary {
 
 .bar-row {
   display: grid;
-  grid-template-columns: minmax(84px, 0.7fr) minmax(120px, 2fr) minmax(92px, auto);
+  grid-template-columns: minmax(112px, 0.8fr) minmax(120px, 2fr) minmax(92px, auto);
   align-items: center;
   gap: 10px;
+}
+
+.bar-row.current-user-bar-row {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid rgba(217, 155, 37, 0.7);
+  border-radius: 8px;
+  background: rgba(241, 184, 75, 0.055);
+}
+
+.current-user-bar-row .bar-label {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.current-user-bar-row .bar-fill {
+  box-shadow: 0 0 0 1px rgba(217, 155, 37, 0.18);
 }
 
 .bar-label,
@@ -1044,6 +1112,36 @@ body[data-theme="dark"] .button.primary {
 
 body[data-theme="dark"] .bar-track {
   background: #263447;
+}
+
+body[data-theme="dark"] .current-user-row,
+body[data-theme="dark"] .current-user-emphasis,
+body[data-theme="dark"] .bar-row.current-user-bar-row {
+  background: rgba(244, 196, 93, 0.055);
+}
+
+body[data-theme="dark"] .current-user-badge {
+  border-color: rgba(244, 196, 93, 0.28);
+  background: rgba(244, 196, 93, 0.1);
+  color: var(--accent);
+}
+
+.person-total-list {
+  display: grid;
+  gap: 6px;
+}
+
+.person-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.person-total.current-user-emphasis {
+  padding: 6px 8px;
+  border-radius: 6px;
 }
 
 .empty {
@@ -1330,6 +1428,20 @@ body[data-theme="dark"] .empty {
 
   .responsive-table tbody tr.bank-transaction-selected::before {
     background: rgba(241, 184, 75, 0.16);
+  }
+
+  .responsive-table tbody tr.current-user-row {
+    border-color: rgba(217, 155, 37, 0.55);
+    background: rgba(241, 184, 75, 0.045);
+    box-shadow: 0 3px 10px rgba(28, 43, 68, 0.1);
+  }
+
+  .responsive-table tbody tr.current-user-row::before {
+    background: rgba(241, 184, 75, 0.075);
+  }
+
+  .responsive-table tbody tr.current-user-row > td:first-of-type {
+    box-shadow: none;
   }
 
   .responsive-table tbody tr.bank-transaction-invalid {
