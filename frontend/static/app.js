@@ -746,7 +746,7 @@ function renderMonthlySettlements() {
                 )
                 .join("")}
             </div>`
-          : `<div class="empty">All settled for this month.</div>`
+          : `<div class="empty settlement-empty">All settled for this month.</div>`
       }
     </div>
   `;
@@ -847,7 +847,7 @@ function renderOverview() {
   const categoryRows = categoryRowsForSelectedMember(data);
   return `
     <section class="stack">
-      <div class="toolbar">
+      <div class="overview-summary-row">
         <label>Period type
           <select id="period-type">
             <option value="month" ${state.periodType === "month" ? "selected" : ""}>Month</option>
@@ -855,13 +855,12 @@ function renderOverview() {
           </select>
         </label>
         <label>Period<select id="period-select">${periodChoices()}</select></label>
+        <div class="card metric overview-summary-metric overview-total-metric"><span class="muted">${state.periodType === "year" ? "Year total" : "Month total"}</span><span class="metric-value">${currency(data.total)}</span></div>
+        <div class="card metric overview-summary-metric"><span class="muted">Categories</span><span class="metric-value">${data.by_category?.length || 0}</span></div>
+        <div class="card metric overview-summary-metric"><span class="muted">Payers</span><span class="metric-value">${data.by_person?.length || 0}</span></div>
       </div>
       ${renderDuplicateExpenseSection(state.overview?.expenses || [])}
-      <div class="grid three">
-        <div class="card metric"><span class="muted">${state.periodType === "year" ? "Year total" : "Month total"}</span><span class="metric-value">${currency(data.total)}</span></div>
-        <div class="card metric"><span class="muted">Categories</span><span class="metric-value">${data.by_category?.length || 0}</span></div>
-        <div class="card metric"><span class="muted">Payers</span><span class="metric-value">${data.by_person?.length || 0}</span></div>
-      </div>
+      ${renderMemberBreakdown(state.overview?.member_breakdown || [])}
       <div class="grid two">
         <div class="panel stack">
           <div class="row between chart-header">
@@ -888,7 +887,6 @@ function renderOverview() {
       ${state.periodType === "year" ? renderBarChart("Monthly chart", state.overview?.monthly_totals || [], "month", "total") : ""}
       ${state.periodType === "year" ? renderTable("Total by month", ["Month", "Total"], state.overview?.monthly_totals?.map((row) => [row.month, currency(row.total)]) || []) : ""}
       ${state.periodType === "month" ? renderMonthlySettlements() : ""}
-      ${renderMemberBreakdown(state.overview?.member_breakdown || [])}
       ${renderCategoryBreakdownTable(data)}
       ${state.periodType === "month" ? `<div class="panel stack">${renderSectionTitle("Expenses this month")}${renderExpenseTable(state.overview?.expenses || [], { context: "overview" })}</div>` : ""}
     </section>
@@ -900,12 +898,15 @@ function renderExpenses() {
   const monthlyShares = prioritizeCurrentUserRows(state.monthlyShares.shares || []);
   return `
     <section class="stack">
-      <div class="toolbar">
+      <div class="monthly-expenses-summary-row">
         <label>Expense month<select id="expense-month-select">${monthChoices()}</select></label>
         <div class="card metric compact-metric"><span class="muted">Month total</span><span class="metric-value" id="expense-month-total">${currency(monthTotal(), tracker.default_currency)}</span></div>
         <div class="card metric compact-metric"><span class="muted">Month shared total</span><span class="metric-value" id="expense-month-shared-total">${currency(monthSharedTotal(), tracker.default_currency)}</span></div>
       </div>
       ${renderDuplicateExpenseSection(state.expenses)}
+      <div id="member-month-breakdown">
+        ${renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.")}
+      </div>
       <div class="panel stack">
         <div>
           ${renderSectionTitle(`Share split for ${state.expenseMonth}`, "Monthly split used for shared expenses.")}
@@ -934,9 +935,6 @@ function renderExpenses() {
               </form>`
             : `<div class="empty">Only tracker owners can manage monthly shares.</div>`
         }
-      </div>
-      <div id="member-month-breakdown">
-        ${renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.")}
       </div>
       <div class="grid two">
       <div class="panel stack">
@@ -1343,8 +1341,9 @@ function renderTrackerSettings() {
   const tracker = currentTracker();
   const prioritizedUsers = prioritizeCurrentUserRows(state.users);
   return `
-    <section class="grid two">
-      <div class="panel stack" style="grid-column: 1 / -1">
+    <section class="stack">
+      <div class="settings-primary-grid">
+      <div class="panel stack">
         ${renderSectionTitle("Tracker settings")}
         ${
           canManageTracker()
@@ -1359,7 +1358,7 @@ function renderTrackerSettings() {
             : `<div class="empty">Only tracker owners can update tracker settings.</div>`
         }
       </div>
-      <div class="panel stack" style="grid-column: 1 / -1">
+      <div class="panel stack">
         ${renderSectionTitle("Default members and shares")}
         ${
           canManageTracker()
@@ -1382,14 +1381,29 @@ function renderTrackerSettings() {
             : `<div class="empty">Only tracker owners can manage members.</div>`
         }
       </div>
-      <div class="panel stack" style="grid-column: 1 / -1">
+      ${
+        state.user.is_admin
+          ? `<div class="panel stack">
+              ${renderSectionTitle("Backup")}
+              <div class="row">
+                <button class="button" id="export-tracker-backup" type="button">Export backup</button>
+              </div>
+              <form id="restore-tracker-backup-form" class="stack">
+                <label>Backup file<input name="backup_file" type="file" accept="application/json,.json" required /></label>
+                <button class="button danger" type="submit">Restore backup</button>
+              </form>
+            </div>`
+          : ""
+      }
+      </div>
+      <div class="panel stack">
         ${renderSectionTitle("Categories")}
-        <form id="category-form" class="stack">
+        <form id="category-form" class="category-create-form">
           <label>Name<input name="name" required /></label>
           <label>Color<input name="color" type="color" value="#f1b84b" /></label>
           <button class="button" type="submit">Add category</button>
         </form>
-        <div class="stack compact-list">
+        <div class="category-settings-list compact-list">
           ${state.categories
             .map(
               (category) => `
@@ -1404,21 +1418,7 @@ function renderTrackerSettings() {
       </div>
       ${
         state.user.is_admin
-          ? `<div class="panel stack" style="grid-column: 1 / -1">
-              ${renderSectionTitle("Backup")}
-              <div class="row">
-                <button class="button" id="export-tracker-backup" type="button">Export backup</button>
-              </div>
-              <form id="restore-tracker-backup-form" class="stack">
-                <label>Backup file<input name="backup_file" type="file" accept="application/json,.json" required /></label>
-                <button class="button danger" type="submit">Restore backup</button>
-              </form>
-            </div>`
-          : ""
-      }
-      ${
-        state.user.is_admin
-          ? `<div class="panel stack" style="grid-column: 1 / -1">
+          ? `<div class="panel stack">
               ${renderSectionTitle("CSV import schemas")}
               <form id="csv-config-form" class="grid two">
                 <label>Name<input name="name" required placeholder="Scotiabank credit" /></label>
