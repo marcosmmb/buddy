@@ -5,6 +5,7 @@ const APP_TABS = [...TRACKER_TABS, "user-settings", "admin"];
 const initialNavigation = new URLSearchParams(window.location.search);
 const requestedTab = initialNavigation.get("tab");
 const requestedTrackerId = Number(initialNavigation.get("tracker"));
+const startsInMobileLayout = window.matchMedia?.("(max-width: 900px)")?.matches ?? false;
 
 const state = {
   token: localStorage.getItem("buddy_token"),
@@ -13,7 +14,7 @@ const state = {
   currencies: CURRENCY_FALLBACKS,
   trackers: [],
   trackerId: requestedTrackerId || Number(localStorage.getItem("buddy_tracker_id")) || null,
-  sidebarCollapsed: localStorage.getItem("buddy_sidebar_collapsed") === "true",
+  sidebarCollapsed: localStorage.getItem("buddy_sidebar_collapsed") === "true" || startsInMobileLayout,
   tab: APP_TABS.includes(requestedTab) ? requestedTab : localStorage.getItem("buddy_tab") || "overview",
   periodType: localStorage.getItem("buddy_period_type") || "month",
   period: localStorage.getItem("buddy_period") || new Date().toISOString().slice(0, 7),
@@ -568,7 +569,63 @@ function renderApp() {
     </div>
     ${renderBankTwoFactorModal()}
   `;
+  prepareResponsiveTables();
   bindAppEvents();
+}
+
+function responsiveTableHeaderLabel(header) {
+  const sortableLabel = header.querySelector(".sortable-heading > span:first-child")?.textContent;
+  return String(sortableLabel || header.textContent || "")
+    .replace(/[↕↑↓]/g, "")
+    .trim();
+}
+
+function responsiveTableCellValue(cell) {
+  const field = cell.querySelector('input:not([type="checkbox"]), select');
+  if (field?.tagName === "SELECT") return field.selectedOptions[0]?.textContent.trim() || "";
+  if (field) return String(field.value || "").trim();
+  return cell.textContent.replace(/\s+/g, " ").trim();
+}
+
+function prepareResponsiveTables() {
+  app.querySelectorAll(".table-scroll table").forEach((table) => {
+    if (table.dataset.responsivePrepared) return;
+    table.dataset.responsivePrepared = "true";
+    table.classList.add("responsive-table");
+    const headers = [...table.querySelectorAll("thead th")];
+    const labels = headers.map(responsiveTableHeaderLabel);
+    const sortHeaders = headers.filter((header) => header.querySelector(".sort-button"));
+    if (sortHeaders.length) {
+      table.classList.add("has-mobile-sort");
+      sortHeaders.forEach((header) => header.classList.add("mobile-sort-header"));
+    }
+    table.querySelectorAll("tbody tr").forEach((row, rowIndex) => {
+      const cells = [...row.children];
+      if (!row.dataset.mobileCardTitle && table.dataset.mobileCardLabel) {
+        const dateIndex = labels.findIndex((label) => label.toLowerCase() === "date");
+        const detailIndex = dateIndex >= 0 ? dateIndex : labels.findIndex((label) => label && !["select", "actions"].includes(label.toLowerCase()));
+        const detail = detailIndex >= 0 ? responsiveTableCellValue(cells[detailIndex]) : "";
+        row.dataset.mobileCardTitle = `${table.dataset.mobileCardLabel} ${rowIndex + 1}${detail ? ` · ${detail}` : ""}`;
+      }
+      cells.forEach((cell, index) => {
+        let mobileLabel = labels[index];
+        if (!mobileLabel && cell.querySelector('input[type="checkbox"]')) mobileLabel = "Select";
+        if (!mobileLabel && cell.querySelector("button")) mobileLabel = "Actions";
+        if (mobileLabel) cell.dataset.mobileLabel = mobileLabel;
+        else if (!cell.textContent.trim() && !cell.children.length) cell.classList.add("mobile-empty-cell");
+        else cell.classList.add("mobile-unlabeled-cell");
+
+        const content = document.createElement("div");
+        content.className = "responsive-cell-content";
+        while (cell.firstChild) content.appendChild(cell.firstChild);
+        cell.appendChild(content);
+      });
+    });
+  });
+}
+
+function collapseSidebarOnMobile() {
+  if (window.matchMedia?.("(max-width: 900px)")?.matches) state.sidebarCollapsed = true;
 }
 
 function renderContent() {
@@ -679,7 +736,7 @@ function renderCategoryBreakdownTable(data) {
       </div>
       ${
         rows.length
-          ? `<div class="table-scroll"><table>
+          ? `<div class="table-scroll"><table data-mobile-card-label="Category">
               <thead><tr><th>Category</th><th>Total</th><th>Paid by person</th></tr></thead>
               <tbody>
                 ${rows
@@ -711,7 +768,7 @@ function renderDuplicateExpenseSection(expenses) {
         <p class="muted">These entries match another expense by date, category, payer, amount, description, and type.</p>
       </div>
       <div class="table-scroll">
-        <table>
+        <table data-mobile-card-label="Expense">
           <thead><tr><th>Date</th><th>Category</th><th>Paid by</th><th>Description</th><th>Type</th><th>Amount</th></tr></thead>
           <tbody>
             ${rows
@@ -855,7 +912,7 @@ function renderExpenses() {
         </form>
       </div>
       <div class="panel stack" style="grid-column: 1 / -1">
-        <div class="row between">
+        <div class="row between compact-action-row">
           ${renderSectionTitle("Expenses")}
           <button class="button small" id="bulk-delete-expenses">Delete selected</button>
         </div>
@@ -952,7 +1009,7 @@ function renderExpenseTable(expenses, { editable = false, context = "overview" }
     ${
       visibleExpenses.length
         ? `<div class="table-scroll">
-      <table class="expense-table">
+      <table class="expense-table" data-mobile-card-label="Expense">
         <thead><tr>${editable ? "<th></th>" : ""}${renderExpenseSortHeader(context, "date", "Date")}${renderExpenseSortHeader(context, "category", "Category")}${renderExpenseSortHeader(context, "paidBy", "Paid by")}${renderExpenseSortHeader(context, "description", "Description")}${renderExpenseSortHeader(context, "type", "Type")}${renderExpenseSortHeader(context, "amount", "Amount")}${editable ? "<th></th>" : ""}</tr></thead>
         <tbody>
           ${visibleExpenses
@@ -1010,7 +1067,7 @@ function renderCsvModal() {
   return `
     <div class="modal-backdrop">
       <div class="modal panel stack">
-        <div class="row between">
+        <div class="row between compact-action-row">
           ${renderSectionTitle("Import CSV")}
           <button class="button small" id="close-csv-import">Close</button>
         </div>
@@ -1031,7 +1088,7 @@ function renderCsvModal() {
                     : ""
                 }
                 <div class="table-scroll">
-                  <table>
+                  <table data-mobile-card-label="CSV row">
                     <thead><tr><th></th><th>Date</th><th>Category</th><th>Paid by</th><th>Description</th><th>Type</th><th>Amount</th></tr></thead>
                     <tbody>
                       ${rows
@@ -1144,7 +1201,7 @@ function renderBankImport() {
         ${renderSectionTitle("Connections")}
         ${
           state.bankConnections.length
-            ? `<div class="table-scroll"><table>
+            ? `<div class="table-scroll"><table data-mobile-card-label="Connection">
                 <thead><tr><th>Institution</th><th>Accounts</th><th>Status</th><th>Last sync</th><th></th></tr></thead>
                 <tbody>
                   ${state.bankConnections
@@ -1185,13 +1242,13 @@ function renderBankImport() {
         <div class="error bank-import-validation" id="bank-import-validation" role="alert" hidden></div>
         ${
           rows.length
-            ? `<div class="table-scroll"><table>
+            ? `<div class="table-scroll"><table data-mobile-card-label="Transaction">
                 <thead><tr><th></th>${renderBankDateSortHeader()}<th>Description</th><th>Account</th><th>Amount</th><th>Category</th><th>Paid by</th><th>Type</th></tr></thead>
                 <tbody>
                   ${rows
                     .map(
-                      (row) => `
-                      <tr data-bank-transaction="${row.id}">
+                      (row, index) => `
+                      <tr data-bank-transaction="${row.id}" data-mobile-card-title="Transaction ${index + 1} · ${escapeHtml(row.date)}" class="${row._reviewSelected ? "bank-transaction-selected" : ""}">
                         <td><input class="compact-check" type="checkbox" data-bank-select="${row.id}" ${row._reviewSelected ? "checked" : ""} /></td>
                         <td>${escapeHtml(row.date)}</td>
                         <td><input class="table-input" name="description" value="${escapeHtml(row._reviewDescription ?? row.description)}" /></td>
@@ -1223,6 +1280,7 @@ function renderBankImport() {
               </table></div>`
             : `<div class="empty">No untracked bank transactions in this review window.</div>`
         }
+        <button class="button primary mobile-only mobile-bank-import-button" type="submit" ${rows.length && state.categories.length ? "" : "disabled"}>Import selected</button>
       </form>
     </section>
   `;
@@ -1276,11 +1334,11 @@ function renderTrackerSettings() {
           <label>Color<input name="color" type="color" value="#f1b84b" /></label>
           <button class="button" type="submit">Add category</button>
         </form>
-        <div class="stack">
+        <div class="stack compact-list">
           ${state.categories
             .map(
               (category) => `
-              <div class="row between">
+              <div class="row between compact-action-row compact-list-row">
                 <span><span class="swatch" style="background:${escapeHtml(category.color)}"></span>${escapeHtml(category.name)}</span>
                 ${canManageTracker() ? `<button class="button small" data-delete-category="${category.id}">Delete</button>` : ""}
               </div>
@@ -1456,12 +1514,19 @@ function renderCreateTracker() {
 }
 
 function renderTable(title, headers, rows, raw = false, emptyText = "No data for this selection.") {
+  const mobileCardLabels = {
+    "Active accounts": "Account",
+    "Member breakdown": "Member",
+    "Saved schemas": "Schema",
+    "Total by month": "Month",
+  };
+  const mobileCardLabel = mobileCardLabels[title] || "Item";
   return `
     <div class="panel stack">
       ${renderSectionTitle(title)}
       ${
         rows.length
-          ? `<div class="table-scroll"><table>
+          ? `<div class="table-scroll"><table data-mobile-card-label="${escapeHtml(mobileCardLabel)}">
                 <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
                 <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${raw ? cell : escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
               </table></div>`
@@ -1484,6 +1549,7 @@ function bindAppEvents() {
   document.querySelector("#logout-button")?.addEventListener("click", logout);
   document.querySelectorAll("[data-tracker]").forEach((button) => {
     button.addEventListener("click", async () => {
+      collapseSidebarOnMobile();
       state.trackerId = Number(button.dataset.tracker);
       state.tab = "overview";
       state.selectedExpenseIds.clear();
@@ -1498,6 +1564,7 @@ function bindAppEvents() {
       const opensElsewhere = event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
       if (button.tagName === "A" && opensElsewhere) return;
       if (button.tagName === "A") event.preventDefault();
+      collapseSidebarOnMobile();
       state.tab = button.dataset.tab;
       localStorage.setItem("buddy_tab", state.tab);
       updateNavigationUrl(state.tab);
@@ -1615,7 +1682,9 @@ function bindForms() {
   });
   document.querySelectorAll("#bank-import-form [data-bank-select]").forEach((input) => {
     input.addEventListener("change", () => {
-      if (!input.checked) clearBankRowValidation(input.closest("[data-bank-transaction]"));
+      const row = input.closest("[data-bank-transaction]");
+      row?.classList.toggle("bank-transaction-selected", input.checked);
+      if (!input.checked) clearBankRowValidation(row);
       updateBankImportValidationSummary(input.form);
     });
   });
