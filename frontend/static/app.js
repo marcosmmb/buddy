@@ -1182,6 +1182,7 @@ function renderBankImport() {
             <button class="button primary" type="submit" ${rows.length && state.categories.length ? "" : "disabled"}>Import selected</button>
           </div>
         </div>
+        <div class="error bank-import-validation" id="bank-import-validation" role="alert" hidden></div>
         ${
           rows.length
             ? `<div class="table-scroll"><table>
@@ -1197,10 +1198,11 @@ function renderBankImport() {
                         <td>${escapeHtml(row.institution_name)}<div class="tiny bank-account-name">${escapeHtml(row.account)}</div></td>
                         <td class="amount">${currency(row.amount, row.currency)}</td>
                         <td>
-                          <select class="table-input" name="category_id">
+                          <select class="table-input" name="category_id" data-bank-required aria-describedby="bank-category-validation-${row.id}">
                             <option value="">Choose category</option>
                             ${state.categories.map((category) => `<option value="${category.id}" ${category.id === row._reviewCategoryId ? "selected" : ""}>${escapeHtml(category.name)}</option>`).join("")}
                           </select>
+                          <div class="field-validation" id="bank-category-validation-${row.id}" data-bank-field-validation hidden>Choose a category.</div>
                         </td>
                         <td>
                           <select class="table-input" name="paid_by_id">
@@ -1604,6 +1606,19 @@ function bindForms() {
     renderApp();
   });
   document.querySelector("#bank-import-form")?.addEventListener("submit", importBankTransactions);
+  document.querySelectorAll("#bank-import-form [data-bank-required]").forEach((field) => {
+    field.addEventListener("change", () => {
+      if (!field.value) return;
+      clearBankFieldValidation(field);
+      updateBankImportValidationSummary(field.form);
+    });
+  });
+  document.querySelectorAll("#bank-import-form [data-bank-select]").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (!input.checked) clearBankRowValidation(input.closest("[data-bank-transaction]"));
+      updateBankImportValidationSummary(input.form);
+    });
+  });
   document.querySelector("#bank-lookback-days")?.addEventListener("change", updateBankLookbackDays);
   document.querySelectorAll("[data-sync-bank]").forEach((button) => button.addEventListener("click", () => syncBankConnection(Number(button.dataset.syncBank))));
   document.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/admin/users/${button.dataset.deleteUser}`, { method: "DELETE" }))));
@@ -2250,17 +2265,65 @@ function selectedBankTransactionRows() {
     .filter(Boolean);
 }
 
+function clearBankFieldValidation(field) {
+  field?.removeAttribute("aria-invalid");
+  const cell = field?.closest("td");
+  const message = cell?.querySelector("[data-bank-field-validation]");
+  if (message) message.hidden = true;
+  const row = field?.closest("[data-bank-transaction]");
+  if (row && !row.querySelector('[aria-invalid="true"]')) row.classList.remove("bank-transaction-invalid");
+}
+
+function clearBankRowValidation(row) {
+  if (!row) return;
+  row.querySelectorAll('[aria-invalid="true"]').forEach(clearBankFieldValidation);
+  row.classList.remove("bank-transaction-invalid");
+}
+
+function updateBankImportValidationSummary(form) {
+  if (!form) return;
+  const validation = form.querySelector("#bank-import-validation");
+  if (!validation) return;
+  const invalidRows = form.querySelectorAll("[data-bank-transaction].bank-transaction-invalid").length;
+  validation.hidden = invalidRows === 0;
+  validation.textContent = invalidRows
+    ? `Complete the highlighted required fields for ${invalidRows} selected ${invalidRows === 1 ? "transaction" : "transactions"}.`
+    : "";
+}
+
+function validateSelectedBankTransactionRows(form, rows) {
+  form.querySelectorAll("[data-bank-transaction]").forEach(clearBankRowValidation);
+  const invalidFields = [];
+  for (const row of rows) {
+    for (const field of row.querySelectorAll("[data-bank-required]")) {
+      if (field.value) continue;
+      field.setAttribute("aria-invalid", "true");
+      row.classList.add("bank-transaction-invalid");
+      const message = field.closest("td")?.querySelector("[data-bank-field-validation]");
+      if (message) message.hidden = false;
+      invalidFields.push(field);
+    }
+  }
+  updateBankImportValidationSummary(form);
+  invalidFields[0]?.focus();
+  return invalidFields.length === 0;
+}
+
 async function importBankTransactions(event) {
   event.preventDefault();
+  const form = event.currentTarget;
   const tracker = currentTracker();
+  const rows = selectedBankTransactionRows();
+  if (!rows.length) {
+    const validation = form.querySelector("#bank-import-validation");
+    validation.textContent = "Select at least one bank transaction to import.";
+    validation.hidden = false;
+    return;
+  }
+  if (!validateSelectedBankTransactionRows(form, rows)) return;
   const transactions = [];
-  for (const row of selectedBankTransactionRows()) {
+  for (const row of rows) {
     const categoryId = Number(row.querySelector('[name="category_id"]').value);
-    if (!categoryId) {
-      state.error = "Choose a category for every selected bank transaction.";
-      renderApp();
-      return;
-    }
     transactions.push({
       transaction_id: Number(row.dataset.bankTransaction),
       category_id: categoryId,
@@ -2269,11 +2332,7 @@ async function importBankTransactions(event) {
       is_shared: row.querySelector('[name="is_shared"]').value === "true",
     });
   }
-  if (!transactions.length) {
-    state.error = "Select at least one bank transaction to import.";
-    renderApp();
-    return;
-  }
+  captureBankReviewState();
   await mutate(() =>
     api(`/api/trackers/${tracker.id}/bank/transactions/import`, {
       method: "POST",

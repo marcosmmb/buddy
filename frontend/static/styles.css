@@ -718,6 +718,27 @@ body[data-theme="dark"] .duplicate-pill {
   padding: 6px 8px;
 }
 
+.table-input[aria-invalid="true"] {
+  border-color: var(--red);
+  box-shadow: 0 0 0 2px rgba(185, 59, 69, 0.16);
+}
+
+.bank-transaction-invalid {
+  background: rgba(185, 59, 69, 0.07);
+}
+
+.field-validation {
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 800;
+  margin-top: 4px;
+}
+
+.field-validation[hidden],
+.bank-import-validation[hidden] {
+  display: none;
+}
+
 .amount-input {
   width: 110px;
 }
