@@ -63,6 +63,7 @@ def db_session() -> Iterator[Session]:
 def init_database() -> None:
     Base.metadata.create_all(engine)
     ensure_user_columns()
+    ensure_bank_transaction_columns()
     with db_session() as session:
         admin = session.query(User).filter(User.email == settings.admin_email.lower()).one_or_none()
         if admin is None:
@@ -106,3 +107,13 @@ def ensure_user_columns() -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
+
+def ensure_bank_transaction_columns() -> None:
+    inspector = inspect(engine)
+    if "bank_transactions" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("bank_transactions")}
+    if "ignored_at" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE bank_transactions ADD COLUMN ignored_at DATETIME"))

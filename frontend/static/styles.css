@@ -410,32 +410,9 @@ h3 {
   font-weight: 800;
 }
 
-.compact-metric {
-  min-width: min(180px, 100%);
-  padding: 10px 14px;
-  gap: 2px;
-  box-shadow: none;
-}
-
-.compact-metric .metric-value {
-  font-size: 22px;
-}
-
-.monthly-expenses-summary-row {
-  display: grid;
-  grid-template-columns: minmax(160px, 0.8fr) repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  align-items: end;
-  margin-bottom: 20px;
-}
-
-.monthly-expenses-summary-row .compact-metric {
-  min-width: 0;
-}
-
 .overview-summary-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1fr) repeat(3, minmax(105px, 0.75fr));
+  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1fr) repeat(4, minmax(105px, 0.75fr));
   gap: 12px;
   align-items: end;
   margin-bottom: 20px;
@@ -1378,41 +1355,7 @@ body[data-theme="dark"] .empty {
   }
 }
 
-@media (min-width: 901px) and (max-width: 1100px) {
-  .monthly-expenses-summary-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .monthly-expenses-summary-row > label {
-    grid-column: 1 / -1;
-  }
-
-  .overview-summary-row {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-
-  .overview-summary-row > label {
-    grid-column: span 3;
-  }
-
-  .overview-summary-metric {
-    grid-column: span 2;
-  }
-}
-
-@media (max-width: 760px) {
-  .monthly-expenses-summary-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .monthly-expenses-summary-row > label {
-    grid-column: 1 / -1;
-  }
-
-  .monthly-expenses-summary-row .metric-value {
-    font-size: 20px;
-  }
-
+@media (min-width: 761px) and (max-width: 1200px) {
   .overview-summary-row {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -1420,14 +1363,20 @@ body[data-theme="dark"] .empty {
   .overview-summary-row > label {
     grid-column: span 2;
   }
+}
+
+@media (max-width: 760px) {
+  .overview-summary-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-summary-row > label {
+    grid-column: span 1;
+  }
 
   .overview-summary-metric {
     grid-column: span 1;
     padding-inline: 10px;
-  }
-
-  .overview-total-metric {
-    grid-column: span 2;
   }
 
   .overview-summary-metric .metric-value {
@@ -1489,8 +1438,7 @@ body[data-theme="dark"] .empty {
     padding: 7px 8px;
   }
 
-  .toolbar > label,
-  .compact-metric {
+  .toolbar > label {
     width: 100%;
   }
 

@@ -106,11 +106,36 @@ def list_review_bank_transactions(session: Session, tracker_id: int, user: User,
             BankTransaction.date >= cutoff,
             BankTransaction.amount > 0,
             BankTransaction.expense_id.is_(None),
+            BankTransaction.ignored_at.is_(None),
             BankTransaction.status.notin_(["imported", "pending", "removed"]),
         )
         .order_by(BankTransaction.date.desc(), BankTransaction.id.desc())
         .all()
     )
+
+
+def ignore_bank_transaction(session: Session, tracker_id: int, transaction_id: int, user: User) -> None:
+    if get_tracker_for_user(session, tracker_id, user) is None:
+        raise HTTPException(status_code=404, detail="Tracker not found")
+    transaction = (
+        session.query(BankTransaction)
+        .join(BankAccount)
+        .join(BankConnection)
+        .filter(
+            BankTransaction.id == transaction_id,
+            BankConnection.tracker_id == tracker_id,
+            BankConnection.user_id == user.id,
+        )
+        .one_or_none()
+    )
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    if transaction.expense_id is not None or transaction.status == "imported":
+        raise HTTPException(status_code=409, detail="Transaction is already tracked")
+    # Store explicit dismissals separately from provider status and legacy "ignored" values.
+    if transaction.ignored_at is None:
+        transaction.ignored_at = utcnow()
+    session.flush()
 
 
 def create_bank_connection(
@@ -296,6 +321,8 @@ def import_bank_transactions(
                 raise ValueError("Transaction does not belong to this user")
             if transaction.expense_id is not None or transaction.status == "imported":
                 raise ValueError("Transaction is already tracked")
+            if transaction.ignored_at is not None:
+                raise ValueError("Transaction was ignored")
             if transaction.status == "removed":
                 raise ValueError("Transaction was removed by the bank")
             if transaction.pending or transaction.status == "pending":

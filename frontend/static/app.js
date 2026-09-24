@@ -191,14 +191,6 @@ function monthChoices(selected = state.expenseMonth) {
   return options.map((value) => `<option value="${value}" ${value === selected ? "selected" : ""}>${value}</option>`).join("");
 }
 
-function monthTotal() {
-  return state.expenses.reduce((total, expense) => total + Number(expense.amount || 0), 0);
-}
-
-function monthSharedTotal() {
-  return state.expenses.reduce((total, expense) => total + (expense.is_shared ? Number(expense.amount || 0) : 0), 0);
-}
-
 function expenseDuplicateMap(expenses) {
   const counts = new Map();
   for (const expense of expenses) {
@@ -230,94 +222,6 @@ function expenseDuplicateMap(expenses) {
 function duplicateExpenses(expenses) {
   const duplicates = expenseDuplicateMap(expenses);
   return expenses.filter((expense) => duplicates.get(expense.id));
-}
-
-function paidTotalsByMember(expenses = state.expenses) {
-  const rows = new Map();
-  for (const expense of expenses) {
-    const row = rows.get(expense.paid_by_id) || {
-      user_id: expense.paid_by_id,
-      name: expense.paid_by,
-      paid_shared: 0,
-      paid_individual: 0,
-      paid_total: 0,
-    };
-    const amount = Number(expense.amount || 0);
-    if (expense.is_shared) row.paid_shared += amount;
-    else row.paid_individual += amount;
-    row.paid_total += amount;
-    rows.set(expense.paid_by_id, row);
-  }
-  return rows;
-}
-
-function memberResponsibilityTotals(expenses = state.expenses) {
-  const rows = new Map();
-  const shares = new Map();
-  const monthlyShares = state.monthlyShares.shares?.length
-    ? state.monthlyShares.shares
-    : (currentTracker()?.members || []).map((member) => ({
-        user_id: member.user_id,
-        name: member.name,
-        share_percent: member.share_percent,
-      }));
-  for (const share of monthlyShares) {
-    rows.set(share.user_id, {
-      user_id: share.user_id,
-      name: share.name,
-      responsibility_shared: 0,
-      responsibility_individual: 0,
-      responsibility_total: 0,
-    });
-    shares.set(share.user_id, Number(share.share_percent || 0) / 100);
-  }
-  for (const expense of expenses) {
-    const amount = Number(expense.amount || 0);
-    if (expense.is_shared) {
-      for (const [userId, shareRatio] of shares.entries()) {
-        const row = rows.get(userId);
-        if (!row) continue;
-        const allocated = amount * shareRatio;
-        row.responsibility_shared += allocated;
-        row.responsibility_total += allocated;
-      }
-    } else {
-      const row = rows.get(expense.paid_by_id) || {
-        user_id: expense.paid_by_id,
-        name: expense.paid_by,
-        responsibility_shared: 0,
-        responsibility_individual: 0,
-        responsibility_total: 0,
-      };
-      row.responsibility_individual += amount;
-      row.responsibility_total += amount;
-      rows.set(expense.paid_by_id, row);
-    }
-  }
-  return rows;
-}
-
-function memberBreakdownFromExpenses(expenses = state.expenses) {
-  const responsibilityRows = memberResponsibilityTotals(expenses);
-  const paidRows = paidTotalsByMember(expenses);
-  const ids = new Set([...responsibilityRows.keys(), ...paidRows.keys()]);
-  return [...ids]
-    .map((userId) => {
-      const responsibility = responsibilityRows.get(userId) || {};
-      const paid = paidRows.get(userId) || {};
-      return {
-        user_id: userId,
-        name: responsibility.name || paid.name || "Unknown",
-        responsibility_shared: responsibility.responsibility_shared || 0,
-        responsibility_individual: responsibility.responsibility_individual || 0,
-        responsibility_total: responsibility.responsibility_total || 0,
-        paid_shared: paid.paid_shared || 0,
-        paid_individual: paid.paid_individual || 0,
-        paid_total: paid.paid_total || 0,
-      };
-    })
-    .filter((row) => row.responsibility_total || row.paid_total)
-    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function renderMemberBreakdown(rows, emptyText = "No expenses for this selection.") {
@@ -839,6 +743,7 @@ function renderDuplicateExpenseSection(expenses) {
 
 function renderOverview() {
   const data = state.overview?.summary || {};
+  const sharedTotal = (data.by_person || []).reduce((total, person) => total + Number(person.shared || 0), 0);
   const payerRows = prioritizeCurrentUserRows(data.by_person || []).map((row) => ({
     name: row.name,
     total: row.total,
@@ -856,6 +761,7 @@ function renderOverview() {
         </label>
         <label>Period<select id="period-select">${periodChoices()}</select></label>
         <div class="card metric overview-summary-metric overview-total-metric"><span class="muted">${state.periodType === "year" ? "Year total" : "Month total"}</span><span class="metric-value">${currency(data.total)}</span></div>
+        <div class="card metric overview-summary-metric overview-total-metric"><span class="muted">${state.periodType === "year" ? "Year shared total" : "Month shared total"}</span><span class="metric-value">${currency(sharedTotal)}</span></div>
         <div class="card metric overview-summary-metric"><span class="muted">Categories</span><span class="metric-value">${data.by_category?.length || 0}</span></div>
         <div class="card metric overview-summary-metric"><span class="muted">Payers</span><span class="metric-value">${data.by_person?.length || 0}</span></div>
       </div>
@@ -898,14 +804,8 @@ function renderExpenses() {
   const monthlyShares = prioritizeCurrentUserRows(state.monthlyShares.shares || []);
   return `
     <section class="stack">
-      <div class="monthly-expenses-summary-row">
+      <div class="toolbar">
         <label>Expense month<select id="expense-month-select">${monthChoices()}</select></label>
-        <div class="card metric compact-metric"><span class="muted">Month total</span><span class="metric-value" id="expense-month-total">${currency(monthTotal(), tracker.default_currency)}</span></div>
-        <div class="card metric compact-metric"><span class="muted">Month shared total</span><span class="metric-value" id="expense-month-shared-total">${currency(monthSharedTotal(), tracker.default_currency)}</span></div>
-      </div>
-      ${renderDuplicateExpenseSection(state.expenses)}
-      <div id="member-month-breakdown">
-        ${renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.")}
       </div>
       <div class="panel stack">
         <div>
@@ -1281,7 +1181,7 @@ function renderBankImport() {
         <div class="row between">
           <div>
             ${renderSectionTitle("Transactions to review")}
-            <div class="tiny">Showing untracked outgoing transactions from the last ${state.bankLookbackDays} days.</div>
+            <div class="tiny">Showing untracked outgoing transactions from the last ${state.bankLookbackDays} days. Ignore transactions to hide them from review.</div>
           </div>
           <div class="row">
             <label class="inline-field">Days
@@ -1294,13 +1194,13 @@ function renderBankImport() {
         ${
           rows.length
             ? `<div class="table-scroll"><table data-mobile-card-label="Transaction">
-                <thead><tr><th></th>${renderBankDateSortHeader()}<th>Description</th><th>Account</th><th>Amount</th><th>Category</th><th>Paid by</th><th>Type</th></tr></thead>
+                <thead><tr><th></th>${renderBankDateSortHeader()}<th>Description</th><th>Account</th><th>Amount</th><th>Category</th><th>Paid by</th><th>Shared</th><th>Actions</th></tr></thead>
                 <tbody>
                   ${rows
                     .map(
                       (row, index) => `
                       <tr data-bank-transaction="${row.id}" data-mobile-card-title="Transaction ${index + 1} · ${escapeHtml(row.date)}" class="${row._reviewSelected ? "bank-transaction-selected" : ""}">
-                        <td><input class="compact-check" type="checkbox" data-bank-select="${row.id}" ${row._reviewSelected ? "checked" : ""} /></td>
+                        <td><input class="compact-check" type="checkbox" data-bank-select="${row.id}" aria-label="Select transaction: ${escapeHtml(row.description)}" ${row._reviewSelected ? "checked" : ""} /></td>
                         <td>${escapeHtml(row.date)}</td>
                         <td><input class="table-input" name="description" value="${escapeHtml(row._reviewDescription ?? row.description)}" /></td>
                         <td>${escapeHtml(row.institution_name)}<div class="tiny bank-account-name">${escapeHtml(row.account)}</div></td>
@@ -1318,10 +1218,10 @@ function renderBankImport() {
                           </select>
                         </td>
                         <td>
-                          <select class="table-input" name="is_shared">
-                            <option value="false" ${row._reviewIsShared === true ? "" : "selected"}>Individual</option>
-                            <option value="true" ${row._reviewIsShared === true ? "selected" : ""}>Shared</option>
-                          </select>
+                          <input class="compact-check" name="is_shared" type="checkbox" aria-label="Shared transaction: ${escapeHtml(row.description)}" ${row._reviewIsShared === true ? "checked" : ""} />
+                        </td>
+                        <td>
+                          <button class="button small" type="button" data-ignore-bank="${row.id}" aria-label="Ignore transaction: ${escapeHtml(row.description)}">Ignore</button>
                         </td>
                       </tr>
                     `,
@@ -1728,6 +1628,7 @@ function bindForms() {
     renderApp();
   });
   document.querySelector("#bank-import-form")?.addEventListener("submit", importBankTransactions);
+  document.querySelectorAll("[data-ignore-bank]").forEach((button) => button.addEventListener("click", ignoreBankTransaction));
   document.querySelectorAll("#bank-import-form [data-bank-required]").forEach((field) => {
     field.addEventListener("change", () => {
       if (!field.value) return;
@@ -1786,6 +1687,23 @@ async function refresh() {
     state.error = error.message;
   }
   renderApp();
+}
+
+async function refreshOverview(trackerId) {
+  const periodType = state.periodType;
+  const period = state.period;
+  const isCurrentSelection = () => currentTracker()?.id === trackerId && state.periodType === periodType && state.period === period;
+  if (!isCurrentSelection()) return;
+  try {
+    const params = new URLSearchParams({ period_type: periodType, period });
+    const overview = await api(`/api/trackers/${trackerId}/overview?${params}`);
+    if (!isCurrentSelection()) return;
+    state.overview = overview;
+  } catch (error) {
+    if (!isCurrentSelection()) return;
+    state.error = error.message;
+  }
+  if (state.tab === "overview") renderApp();
 }
 
 async function handleNavigationChange() {
@@ -2006,6 +1924,7 @@ function setAutosaveStatus(expenseId, text, tone = "") {
 }
 
 function scheduleExpenseAutosave(expenseId) {
+  const tracker = currentTracker();
   const payload = expensePayloadFromRow(expenseId);
   const category = state.categories.find((item) => item.id === payload.category_id);
   const payer = currentTracker()?.members.find((member) => member.user_id === payload.paid_by_id);
@@ -2025,23 +1944,14 @@ function scheduleExpenseAutosave(expenseId) {
   autosaveTimers.set(
     expenseId,
     setTimeout(async () => {
-      const tracker = currentTracker();
       try {
         const updated = await api(`/api/trackers/${tracker.id}/expenses/${expenseId}`, {
           method: "PUT",
           body: JSON.stringify(payload),
         });
         state.expenses = state.expenses.map((expense) => (expense.id === expenseId ? updated : expense));
-        const total = document.querySelector("#expense-month-total");
-        if (total) total.textContent = currency(monthTotal(), tracker.default_currency);
-        const sharedTotal = document.querySelector("#expense-month-shared-total");
-        if (sharedTotal) sharedTotal.textContent = currency(monthSharedTotal(), tracker.default_currency);
-        const memberBreakdown = document.querySelector("#member-month-breakdown");
-        if (memberBreakdown) {
-          memberBreakdown.innerHTML = renderMemberBreakdown(memberBreakdownFromExpenses(state.expenses), "No expenses for this month.");
-          prepareResponsiveTables();
-        }
         setAutosaveStatus(expenseId, "Saved", "positive");
+        await refreshOverview(tracker.id);
       } catch (error) {
         state.error = error.message;
         setAutosaveStatus(expenseId, "Not saved", "negative");
@@ -2382,8 +2292,29 @@ function captureBankReviewState() {
     transaction._reviewDescription = element.querySelector('[name="description"]')?.value ?? transaction.description;
     transaction._reviewCategoryId = Number(element.querySelector('[name="category_id"]')?.value) || null;
     transaction._reviewPaidById = Number(element.querySelector('[name="paid_by_id"]')?.value) || transaction.default_paid_by_id;
-    transaction._reviewIsShared = element.querySelector('[name="is_shared"]')?.value === "true";
+    transaction._reviewIsShared = Boolean(element.querySelector('[name="is_shared"]')?.checked);
   });
+}
+
+async function ignoreBankTransaction(event) {
+  const button = event.currentTarget;
+  const transactionId = Number(button.dataset.ignoreBank);
+  const trackerId = currentTracker().id;
+  captureBankReviewState();
+  button.disabled = true;
+  button.textContent = "Ignoring…";
+  try {
+    await api(`/api/trackers/${trackerId}/bank/transactions/${transactionId}/ignore`, { method: "POST" });
+    if (currentTracker()?.id !== trackerId) return;
+    captureBankReviewState();
+    state.bankTransactions = state.bankTransactions.filter((row) => row.id !== transactionId);
+    state.error = "";
+  } catch (error) {
+    if (currentTracker()?.id !== trackerId) return;
+    captureBankReviewState();
+    state.error = error.message;
+  }
+  renderApp();
 }
 
 function selectedBankTransactionRows() {
@@ -2456,7 +2387,7 @@ async function importBankTransactions(event) {
       category_id: categoryId,
       paid_by_id: Number(row.querySelector('[name="paid_by_id"]').value),
       description: row.querySelector('[name="description"]').value,
-      is_shared: row.querySelector('[name="is_shared"]').value === "true",
+      is_shared: row.querySelector('[name="is_shared"]').checked,
     });
   }
   captureBankReviewState();

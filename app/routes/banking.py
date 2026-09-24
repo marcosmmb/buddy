@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload
 from app.banking.plaid import PlaidClient
 from app.banking.service import (
     create_bank_connection,
+    ignore_bank_transaction,
     import_bank_transactions,
     list_review_bank_transactions,
     load_bank_connection_for_user,
@@ -122,6 +123,13 @@ class BankingController(Controller):
                 serialize_bank_transaction(transaction, user)
                 for transaction in list_review_bank_transactions(session, tracker_id, user, days)
             ]
+
+    @post("/transactions/{transaction_id:int}/ignore", status_code=200)
+    def ignore_transaction(self, request: Request, tracker_id: int, transaction_id: int) -> dict[str, str]:
+        user = require_user(request)
+        with db_session() as session:
+            ignore_bank_transaction(session, tracker_id, transaction_id, user)
+            return {"status": "ok"}
 
     @post("/transactions/import")
     def import_transactions(self, request: Request, tracker_id: int, data: Annotated[BankTransactionImportPayload, Body()]) -> dict[str, Any]:
