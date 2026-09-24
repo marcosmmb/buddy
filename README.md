@@ -131,7 +131,7 @@ The bank import flow is intentionally review-first:
 4. The user manually chooses the Buddy category for each transaction.
 5. The user imports selected rows into the tracker as regular expenses.
 
-Check **Shared** for transactions that should be split among tracker members; unchecked transactions are individual expenses. Use **Ignore** on any transaction you want to hide from review. Ignored transactions stay hidden after refreshes and future syncs and are not added as expenses.
+Check **Shared** for transactions that should be split among tracker members; unchecked transactions are individual expenses. Use **Ignore** on any transaction you want to hide from review, then confirm the popup. Ignored transactions stay hidden after refreshes and future syncs and are not added as expenses. To undo this, expand **Ignored transactions** at the bottom of Bank Import and click **Restore**. This section starts collapsed and uses the same **Days** review window as Transactions to review.
 
 Buddy does not automatically match categories from Plaid. Plaid category data is kept only in the raw transaction payload for debugging. Syncing is manual from the Bank Import tab, so private LAN deployments do not need a public callback URL.
 

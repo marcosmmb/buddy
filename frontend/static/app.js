@@ -31,6 +31,8 @@ const state = {
   bankConfig: { plaid_configured: false, plaid_env: "sandbox" },
   bankConnections: [],
   bankTransactions: [],
+  ignoredBankTransactions: [],
+  ignoredBankExpanded: false,
   bankLookbackDays: Number(localStorage.getItem("buddy_bank_lookback_days")) || 8,
   bankDateSort: null,
   syncingBankConnectionId: null,
@@ -327,7 +329,7 @@ async function loadTrackerData() {
   const expenseParams = new URLSearchParams({ month: state.expenseMonth });
   const shareParams = new URLSearchParams({ month: state.expenseMonth });
   const bankParams = new URLSearchParams({ days: String(state.bankLookbackDays) });
-  const [categories, expenses, overview, periodOptions, csvConfigs, monthlyShares, bankConfig, bankConnections, bankTransactions] = await Promise.all([
+  const [categories, expenses, overview, periodOptions, csvConfigs, monthlyShares, bankConfig, bankConnections, bankTransactions, ignoredBankTransactions] = await Promise.all([
     api(`/api/trackers/${tracker.id}/categories`),
     api(`/api/trackers/${tracker.id}/expenses?${expenseParams}`),
     api(`/api/trackers/${tracker.id}/overview?${overviewParams}`),
@@ -337,6 +339,7 @@ async function loadTrackerData() {
     api(`/api/trackers/${tracker.id}/bank/config`),
     api(`/api/trackers/${tracker.id}/bank/connections`),
     api(`/api/trackers/${tracker.id}/bank/transactions?${bankParams}`),
+    api(`/api/trackers/${tracker.id}/bank/transactions/ignored?${bankParams}`),
   ]);
   state.categories = categories;
   state.expenses = expenses;
@@ -347,6 +350,8 @@ async function loadTrackerData() {
   state.bankConfig = bankConfig;
   state.bankConnections = bankConnections;
   state.bankTransactions = bankTransactions;
+  state.ignoredBankTransactions = ignoredBankTransactions;
+  state.ignoredBankExpanded = false;
 }
 
 function renderAuth() {
@@ -1233,7 +1238,33 @@ function renderBankImport() {
         }
         <button class="button primary mobile-only mobile-bank-import-button" type="submit" ${rows.length && state.categories.length ? "" : "disabled"}>Import selected</button>
       </form>
+      ${renderIgnoredBankTransactions()}
     </section>
+  `;
+}
+
+function renderIgnoredBankTransactions() {
+  const rows = sortedBankTransactions(state.ignoredBankTransactions);
+  return `
+    <details class="panel ignored-bank-transactions" id="ignored-bank-transactions" ${state.ignoredBankExpanded ? "open" : ""}>
+      <summary>Ignored transactions (${rows.length})</summary>
+      <div class="stack">
+        <p class="muted">Ignored transactions from the last ${state.bankLookbackDays} days. Restore a transaction to review it again.</p>
+        ${rows.length
+          ? `<div class="table-scroll"><table data-mobile-card-label="Ignored transaction">
+              <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Amount</th><th>Actions</th></tr></thead>
+              <tbody>${rows.map((row) => `
+                <tr>
+                  <td>${escapeHtml(row.date)}</td>
+                  <td>${escapeHtml(row.description)}</td>
+                  <td>${escapeHtml(row.institution_name)}<div class="tiny bank-account-name">${escapeHtml(row.account)}</div></td>
+                  <td class="amount">${currency(row.amount, row.currency)}</td>
+                  <td><button class="button small" type="button" data-restore-bank="${row.id}" aria-label="Restore transaction: ${escapeHtml(row.description)}">Restore</button></td>
+                </tr>`).join("")}</tbody>
+            </table></div>`
+          : `<div class="empty">No ignored transactions in this review window.</div>`}
+      </div>
+    </details>
   `;
 }
 
@@ -1629,6 +1660,10 @@ function bindForms() {
   });
   document.querySelector("#bank-import-form")?.addEventListener("submit", importBankTransactions);
   document.querySelectorAll("[data-ignore-bank]").forEach((button) => button.addEventListener("click", ignoreBankTransaction));
+  document.querySelectorAll("[data-restore-bank]").forEach((button) => button.addEventListener("click", restoreBankTransaction));
+  document.querySelector("#ignored-bank-transactions")?.addEventListener("toggle", (event) => {
+    state.ignoredBankExpanded = event.currentTarget.open;
+  });
   document.querySelectorAll("#bank-import-form [data-bank-required]").forEach((field) => {
     field.addEventListener("change", () => {
       if (!field.value) return;
@@ -2297,20 +2332,40 @@ function captureBankReviewState() {
 }
 
 async function ignoreBankTransaction(event) {
-  const button = event.currentTarget;
-  const transactionId = Number(button.dataset.ignoreBank);
+  const transaction = state.bankTransactions.find((row) => row.id === Number(event.currentTarget.dataset.ignoreBank));
+  if (!transaction) return;
+  if (!window.confirm(`Ignore "${transaction.description}" (${currency(transaction.amount, transaction.currency)}, ${transaction.date})?\n\nYou can restore it from Ignored transactions below.`)) return;
+  await changeBankTransactionIgnored(event.currentTarget, transaction.id, "ignore");
+}
+
+async function restoreBankTransaction(event) {
+  await changeBankTransactionIgnored(event.currentTarget, Number(event.currentTarget.dataset.restoreBank), "restore");
+}
+
+async function changeBankTransactionIgnored(button, transactionId, action) {
   const trackerId = currentTracker().id;
   captureBankReviewState();
+  state.ignoredBankExpanded = Boolean(document.querySelector("#ignored-bank-transactions")?.open);
   button.disabled = true;
-  button.textContent = "Ignoring…";
+  button.textContent = action === "ignore" ? "Ignoring…" : "Restoring…";
   try {
-    await api(`/api/trackers/${trackerId}/bank/transactions/${transactionId}/ignore`, { method: "POST" });
-    if (currentTracker()?.id !== trackerId) return;
+    await api(`/api/trackers/${trackerId}/bank/transactions/${transactionId}/${action}`, { method: "POST" });
+    if (!state.user || currentTracker()?.id !== trackerId) return;
+    const days = state.bankLookbackDays;
+    const params = new URLSearchParams({ days: String(days) });
+    const [reviewRows, ignoredRows] = await Promise.all([
+      api(`/api/trackers/${trackerId}/bank/transactions?${params}`),
+      api(`/api/trackers/${trackerId}/bank/transactions/ignored?${params}`),
+    ]);
+    if (!state.user || currentTracker()?.id !== trackerId || state.bankLookbackDays !== days) return;
     captureBankReviewState();
-    state.bankTransactions = state.bankTransactions.filter((row) => row.id !== transactionId);
+    const drafts = new Map([...state.bankTransactions, ...state.ignoredBankTransactions].map((row) => [row.id, row]));
+    const withDraft = (row) => ({ ...drafts.get(row.id), ...row });
+    state.bankTransactions = reviewRows.map(withDraft);
+    state.ignoredBankTransactions = ignoredRows.map(withDraft);
     state.error = "";
   } catch (error) {
-    if (currentTracker()?.id !== trackerId) return;
+    if (!state.user || currentTracker()?.id !== trackerId) return;
     captureBankReviewState();
     state.error = error.message;
   }

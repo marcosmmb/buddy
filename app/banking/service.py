@@ -94,6 +94,14 @@ def normalized_review_days(days: int) -> int:
 
 
 def list_review_bank_transactions(session: Session, tracker_id: int, user: User, days: int) -> list[BankTransaction]:
+    return _list_bank_transactions(session, tracker_id, user, days, ignored=False)
+
+
+def list_ignored_bank_transactions(session: Session, tracker_id: int, user: User, days: int) -> list[BankTransaction]:
+    return _list_bank_transactions(session, tracker_id, user, days, ignored=True)
+
+
+def _list_bank_transactions(session: Session, tracker_id: int, user: User, days: int, *, ignored: bool) -> list[BankTransaction]:
     cutoff = utcnow().date() - timedelta(days=normalized_review_days(days) - 1)
     return (
         session.query(BankTransaction)
@@ -106,7 +114,7 @@ def list_review_bank_transactions(session: Session, tracker_id: int, user: User,
             BankTransaction.date >= cutoff,
             BankTransaction.amount > 0,
             BankTransaction.expense_id.is_(None),
-            BankTransaction.ignored_at.is_(None),
+            BankTransaction.ignored_at.is_not(None) if ignored else BankTransaction.ignored_at.is_(None),
             BankTransaction.status.notin_(["imported", "pending", "removed"]),
         )
         .order_by(BankTransaction.date.desc(), BankTransaction.id.desc())
@@ -115,6 +123,14 @@ def list_review_bank_transactions(session: Session, tracker_id: int, user: User,
 
 
 def ignore_bank_transaction(session: Session, tracker_id: int, transaction_id: int, user: User) -> None:
+    _set_bank_transaction_ignored(session, tracker_id, transaction_id, user, ignored=True)
+
+
+def restore_bank_transaction(session: Session, tracker_id: int, transaction_id: int, user: User) -> None:
+    _set_bank_transaction_ignored(session, tracker_id, transaction_id, user, ignored=False)
+
+
+def _set_bank_transaction_ignored(session: Session, tracker_id: int, transaction_id: int, user: User, *, ignored: bool) -> None:
     if get_tracker_for_user(session, tracker_id, user) is None:
         raise HTTPException(status_code=404, detail="Tracker not found")
     transaction = (
@@ -133,7 +149,9 @@ def ignore_bank_transaction(session: Session, tracker_id: int, transaction_id: i
     if transaction.expense_id is not None or transaction.status == "imported":
         raise HTTPException(status_code=409, detail="Transaction is already tracked")
     # Store explicit dismissals separately from provider status and legacy "ignored" values.
-    if transaction.ignored_at is None:
+    if not ignored:
+        transaction.ignored_at = None
+    elif transaction.ignored_at is None:
         transaction.ignored_at = utcnow()
     session.flush()
 

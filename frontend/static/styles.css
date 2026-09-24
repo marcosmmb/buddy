@@ -936,6 +936,16 @@ body[data-theme="dark"] .duplicate-pill {
   font-weight: 700;
 }
 
+.ignored-bank-transactions > summary {
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.ignored-bank-transactions[open] > summary {
+  margin-bottom: 16px;
+}
+
 .spinner {
   width: 14px;
   height: 14px;

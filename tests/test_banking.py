@@ -14,6 +14,8 @@ from app.banking.service import (
     ignore_bank_transaction,
     import_bank_transactions,
     list_review_bank_transactions,
+    list_ignored_bank_transactions,
+    restore_bank_transaction,
     load_bank_connection_for_user,
     sync_bank_connection,
 )
@@ -200,6 +202,35 @@ class BankingServiceTests(unittest.TestCase):
             self.assertEqual(result, {"imported": 0, "skipped": [{"transaction_id": transaction_id, "reason": "Transaction was ignored"}]})
             self.assertEqual(session.query(Expense).count(), 0)
 
+            self.assertEqual([row.id for row in list_ignored_bank_transactions(session, tracker.id, user, 30)], [transaction_id])
+            restore_bank_transaction(session, tracker.id, transaction_id, user)
+            restore_bank_transaction(session, tracker.id, transaction_id, user)
+            session.commit()
+            session.expire_all()
+            self.assertIsNone(transaction.ignored_at)
+            self.assertEqual(list_ignored_bank_transactions(session, tracker.id, user, 30), [])
+            self.assertEqual([row.id for row in list_review_bank_transactions(session, tracker.id, user, 30)], [transaction_id])
+            result = import_bank_transactions(session, tracker, user, [BankTransactionImportItem(transaction_id=transaction_id, category_id=1)])
+            self.assertEqual(result, {"imported": 1, "skipped": []})
+
+    def test_ignored_transactions_use_transaction_date_and_same_review_window(self) -> None:
+        with self.Session() as session:
+            user = User(id=1, email="marcos@example.test", name="Marcos", password_hash="x")
+            tracker = Tracker(id=1, name="Home", created_by_id=1)
+            member = TrackerMember(tracker_id=1, user_id=1, role="owner", user=user, tracker=tracker)
+            session.add_all([user, tracker, member])
+            session.flush()
+            create_bank_connection(session, tracker, user, "public-test", "Mybank", FakePlaidClient())
+            transaction = session.query(BankTransaction).filter_by(provider_transaction_id="txn-outgoing").one()
+            transaction.date = utcnow().date() - timedelta(days=7)
+            ignore_bank_transaction(session, tracker.id, transaction.id, user)
+            self.assertEqual([row.id for row in list_ignored_bank_transactions(session, tracker.id, user, 8)], [transaction.id])
+            self.assertEqual(list_ignored_bank_transactions(session, tracker.id, user, 7), [])
+            restore_bank_transaction(session, tracker.id, transaction.id, user)
+            self.assertEqual(list_ignored_bank_transactions(session, tracker.id, user, 8), [])
+            self.assertEqual(list_review_bank_transactions(session, tracker.id, user, 7), [])
+            self.assertEqual([row.id for row in list_review_bank_transactions(session, tracker.id, user, 8)], [transaction.id])
+
     def test_ignore_rejects_already_imported_transactions(self) -> None:
         with self.Session() as session:
             user = User(id=1, email="marcos@example.test", name="Marcos", password_hash="x", default_currency="CAD")
@@ -216,6 +247,9 @@ class BankingServiceTests(unittest.TestCase):
                 ignore_bank_transaction(session, tracker.id, transaction.id, user)
 
             self.assertEqual(context.exception.status_code, 409)
+            with self.assertRaises(HTTPException) as restore_context:
+                restore_bank_transaction(session, tracker.id, transaction.id, user)
+            self.assertEqual(restore_context.exception.status_code, 409)
             self.assertIsNone(transaction.ignored_at)
             self.assertEqual(session.query(Expense).count(), 1)
 

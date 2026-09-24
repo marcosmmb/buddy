@@ -77,6 +77,39 @@ with TestClient(app=app) as client:
     with db_session() as session:
         assert session.get(BankTransaction, transaction_id).ignored_at is not None
         assert session.query(Expense).count() == 0
+
+    ignored_url = base_url + "/ignored?days=8"
+    response = client.get(ignored_url, headers=owner_headers)
+    assert response.status_code == 200, response.text
+    assert [row["id"] for row in response.json()] == [transaction_id], response.text
+    assert client.get(ignored_url).status_code == 401
+    restore_url = f"{base_url}/{transaction_id}/restore"
+    assert client.post(restore_url).status_code == 401
+    for token in ["member-token", "admin-token"]:
+        headers = {"authorization": "Bearer " + token}
+        response = client.get(ignored_url, headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json() == [], response.text
+        response = client.post(restore_url, headers=headers)
+        assert response.status_code == 404, response.text
+    response = client.post(f"/api/trackers/{other_tracker_id}/bank/transactions/{transaction_id}/restore", headers=owner_headers)
+    assert response.status_code == 404, response.text
+    response = client.post(f"{base_url}/999999/restore", headers=owner_headers)
+    assert response.status_code == 404, response.text
+    for _ in range(2):
+        response = client.post(restore_url, headers=owner_headers)
+        assert response.status_code == 200, response.text
+    response = client.get(ignored_url, headers=owner_headers)
+    assert response.status_code == 200 and response.json() == [], response.text
+    response = client.get(base_url, headers=owner_headers)
+    assert response.status_code == 200, response.text
+    assert [row["id"] for row in response.json()] == [transaction_id], response.text
+    response = client.post(f"{base_url}/import", headers=owner_headers, json={"transactions": [{"transaction_id": transaction_id, "category_id": category_id, "is_shared": True}]})
+    assert response.status_code == 201, response.text
+    assert response.json() == {"imported": 1, "skipped": []}, response.text
+    with db_session() as session:
+        assert session.get(BankTransaction, transaction_id).ignored_at is None
+        assert session.query(Expense).one().is_shared is True
 """
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(

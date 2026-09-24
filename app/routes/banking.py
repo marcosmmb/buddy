@@ -13,6 +13,8 @@ from app.banking.service import (
     ignore_bank_transaction,
     import_bank_transactions,
     list_review_bank_transactions,
+    list_ignored_bank_transactions,
+    restore_bank_transaction,
     load_bank_connection_for_user,
     normalized_review_days,
     serialize_bank_connection,
@@ -123,6 +125,24 @@ class BankingController(Controller):
                 serialize_bank_transaction(transaction, user)
                 for transaction in list_review_bank_transactions(session, tracker_id, user, days)
             ]
+
+    @get("/transactions/ignored")
+    def ignored_transactions(self, request: Request, tracker_id: int, days: int = 8) -> list[dict[str, Any]]:
+        user = require_user(request)
+        with db_session() as session:
+            if get_tracker_for_user(session, tracker_id, user) is None:
+                raise HTTPException(status_code=404, detail="Tracker not found")
+            return [
+                serialize_bank_transaction(transaction, user)
+                for transaction in list_ignored_bank_transactions(session, tracker_id, user, days)
+            ]
+
+    @post("/transactions/{transaction_id:int}/restore", status_code=200)
+    def restore_transaction(self, request: Request, tracker_id: int, transaction_id: int) -> dict[str, str]:
+        user = require_user(request)
+        with db_session() as session:
+            restore_bank_transaction(session, tracker_id, transaction_id, user)
+            return {"status": "ok"}
 
     @post("/transactions/{transaction_id:int}/ignore", status_code=200)
     def ignore_transaction(self, request: Request, tracker_id: int, transaction_id: int) -> dict[str, str]:
