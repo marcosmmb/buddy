@@ -202,6 +202,30 @@ UV_CACHE_DIR=.uv-cache make test
 UV_CACHE_DIR=.uv-cache make smoke
 ```
 
+### Demo data for manual testing
+
+Populate the running Docker deployment at `http://localhost:3088`:
+
+```bash
+make seed-demo
+# To use a different existing account:
+make seed-demo DEMO_USER=you@example.com
+```
+
+The command uses the running container's database and defaults to its configured `ADMIN_EMAIL`. It creates a separate **Buddy Demo** tracker with 10 expenses across the current and previous months, shared and individual expenses, an intentional duplicate pair, and 8 recent bank transactions to review. A disabled **Demo Housemate** account provides a second member for testing share splits and settlements; it cannot sign in.
+
+Sign in as the selected account, refresh the page, and open **Buddy Demo**. Select the current month in Overview and Monthly Expenses. In Bank Import, try the Shared checkbox, Ignore, and Import selected. No Plaid credentials are needed. The demo bank's Sync button preserves review choices without contacting Plaid. A pending transaction and incoming payroll are also seeded to exercise review filtering.
+
+Rerunning the command preserves the existing demo tracker, including your edits, imports, and ignored transactions. For a fresh dataset, delete **Buddy Demo** in Tracker Settings and rerun. Existing trackers and expenses are untouched. The disabled demo housemate is reused when recreating the demo.
+
+For an app running directly with uv, use its database URL:
+
+```bash
+DATABASE_URL=sqlite:///./buddy.sqlite3 uv run python scripts/seed_demo.py --user-email admin@buddy.local
+```
+
+The deployment must already be initialized and the selected user must exist. Unlike `make smoke`, this command leaves data in the running app for manual testing.
+
 ## Project Structure
 
 ```text
@@ -220,6 +244,7 @@ frontend/
   static/              Mascot, icon, and visual assets
 scripts/
   smoke_test.py        End-to-end API smoke test
+  seed_demo.py         Persistent demo data for an existing local deployment
 ```
 
 ## Security Notes

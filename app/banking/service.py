@@ -196,6 +196,10 @@ def upsert_accounts(session: Session, connection: BankConnection, accounts: list
 
 
 def sync_bank_connection(session: Session, connection: BankConnection, plaid_client: PlaidClient | None = None) -> dict[str, int]:
+    if connection.provider == "demo":
+        connection.last_synced_at = utcnow()
+        session.flush()
+        return {"added": 0, "modified": 0, "removed": 0}
     plaid_client = plaid_client or PlaidClient()
     access_token = decrypt_token(connection.encrypted_access_token)
     account_by_provider_id = {

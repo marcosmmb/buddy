@@ -5,10 +5,11 @@ VERSION ?= $(shell $(UV) version --short 2>/dev/null || $(PYTHON) -c 'import tom
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 DATABASE_URL ?= sqlite:///./buddy.sqlite3
 ADMIN_EMAIL ?= admin@buddy.local
+DEMO_USER ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync up down restart build logs ps test smoke db-shell app-shell
+.PHONY: help sync up down restart build logs ps test smoke seed-demo db-shell app-shell
 
 help:
 	@printf "Buddy commands:\n"
@@ -21,6 +22,7 @@ help:
 	@printf "  make ps            Show Compose service status\n"
 	@printf "  make test          Run the unit test suite\n"
 	@printf "  make smoke         Run the API smoke test\n"
+	@printf "  make seed-demo     Add demo data to the running Docker app (optional DEMO_USER=email)\n"
 	@printf "  make db-shell      Open SQLite inside the running app container\n"
 	@printf "  make app-shell     Open a shell inside the running app container\n"
 
@@ -49,6 +51,9 @@ test:
 
 smoke:
 	DATABASE_URL="$(DATABASE_URL)" LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD=0 $(UV) run python scripts/smoke_test.py
+
+seed-demo:
+	$(COMPOSE) exec -T -e BUDDY_DEMO_USER="$(DEMO_USER)" app python - < scripts/seed_demo.py
 
 db-shell:
 	$(COMPOSE) exec app python -m sqlite3 /data/buddy.sqlite3
