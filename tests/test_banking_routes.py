@@ -9,6 +9,74 @@ from pathlib import Path
 
 
 class BankingRouteTests(unittest.TestCase):
+    def test_sync_response_preserves_plaid_error_diagnostics(self) -> None:
+        script = """
+from unittest.mock import patch
+
+from litestar.testing import TestClient
+from app.banking.crypto import encrypt_token
+from app.banking.plaid import PlaidApiError
+from app.db import db_session
+from app.main import app
+from app.models import BankConnection, SessionToken, Tracker, TrackerMember, User
+
+with TestClient(app=app) as client:
+    with db_session() as session:
+        user = session.query(User).filter(User.is_admin.is_(True)).one()
+        tracker = Tracker(name="Home", created_by_id=user.id)
+        session.add(tracker)
+        session.flush()
+        session.add_all([
+            TrackerMember(tracker_id=tracker.id, user_id=user.id, role="owner"),
+            SessionToken(token="owner-token", user_id=user.id),
+        ])
+        connection = BankConnection(
+            tracker_id=tracker.id, user_id=user.id, provider_item_id="item-test",
+            encrypted_access_token=encrypt_token("access-test"), sync_cursor="original-cursor",
+        )
+        session.add(connection)
+        session.flush()
+        tracker_id, connection_id = tracker.id, connection.id
+
+    error = PlaidApiError(
+        "Bank login needs updating", "ITEM_LOGIN_REQUIRED",
+        error_type="ITEM_ERROR", request_id="request-test", status_code=400,
+    )
+    with patch("app.banking.service.PlaidClient") as plaid:
+        plaid.return_value.sync_transactions.side_effect = error
+        response = client.post(
+            f"/api/trackers/{tracker_id}/bank/connections/{connection_id}/sync?days=15",
+            headers={"authorization": "Bearer owner-token"},
+        )
+        plaid.return_value.sync_transactions.assert_called_once_with("access-test", "original-cursor")
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"] == "Bank login needs updating", response.text
+    assert response.json()["extra"] == {
+        "error_code": "ITEM_LOGIN_REQUIRED", "error_type": "ITEM_ERROR",
+        "request_id": "request-test", "upstream_status_code": 400,
+    }, response.text
+    assert "access-test" not in response.text
+    with db_session() as session:
+        connection = session.get(BankConnection, connection_id)
+        assert connection.sync_cursor == "original-cursor"
+        assert connection.last_synced_at is None
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                env={
+                    **os.environ,
+                    "DATABASE_URL": f"sqlite:///{Path(directory) / 'buddy.sqlite3'}",
+                    "ADMIN_EMAIL": "admin@buddy.local",
+                    "ADMIN_PASSWORD": "change-me-now",
+                    "LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD": "0",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_ignore_route_authentication_ownership_and_persistence(self) -> None:
         script = """
 from decimal import Decimal

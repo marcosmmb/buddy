@@ -237,7 +237,16 @@ def sync_bank_connection(session: Session, connection: BankConnection, plaid_cli
                 continue
             connection.status = "error"
             connection.error_message = str(exc)
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc),
+                extra={
+                    "error_code": exc.error_code,
+                    "error_type": exc.error_type,
+                    "request_id": exc.request_id,
+                    "upstream_status_code": exc.status_code,
+                },
+            ) from exc
         for transaction in data.get("added", []):
             upsert_transaction(session, connection, account_by_provider_id, transaction)
             counts["added"] += 1

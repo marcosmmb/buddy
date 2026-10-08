@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -7,6 +8,8 @@ import httpx
 from app.config import settings
 from app.models import Tracker, User
 
+
+logger = logging.getLogger(__name__)
 
 PLAID_BASE_URLS = {
     "sandbox": "https://sandbox.plaid.com",
@@ -16,9 +19,20 @@ PLAID_BASE_URLS = {
 
 
 class PlaidApiError(RuntimeError):
-    def __init__(self, message: str, error_code: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "",
+        *,
+        error_type: str = "",
+        request_id: str = "",
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.error_type = error_type
+        self.request_id = request_id
+        self.status_code = status_code
 
 
 def plaid_base_url() -> str:
@@ -46,7 +60,23 @@ class PlaidClient:
         )
         data = response.json()
         if response.status_code >= 400:
-            raise PlaidApiError(data.get("error_message") or "Plaid request failed", data.get("error_code", ""))
+            error = PlaidApiError(
+                data.get("error_message") or "Plaid request failed",
+                data.get("error_code") or "",
+                error_type=data.get("error_type") or "",
+                request_id=data.get("request_id") or "",
+                status_code=response.status_code,
+            )
+            # Log diagnostic identifiers only; payloads and messages can contain credentials.
+            logger.warning(
+                "Plaid request failed: path=%s status=%s error_type=%s error_code=%s request_id=%s",
+                path,
+                error.status_code,
+                error.error_type,
+                error.error_code,
+                error.request_id,
+            )
+            raise error
         return data
 
     def create_link_token(self, user: User, tracker: Tracker) -> str:
