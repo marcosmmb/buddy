@@ -18,7 +18,7 @@ function bankUi() {
       Plaid: { create: (options) => { linkOptions = options; return { open: () => {} }; } },
     },
     fetch: async (url, options) => {
-      calls.push({ url, body: options.body && JSON.parse(options.body) });
+      calls.push({ url, method: options.method, body: options.body && JSON.parse(options.body) });
       return {
         ok: true, status: 201,
         text: async () => JSON.stringify(url.endsWith("/link-token")
@@ -98,4 +98,55 @@ test("Leaving update Link preserves the connection and does not start a sync", a
   assert.equal(ui.run("state.bankConnections[0].status"), "reauth_required");
   ui.linkOptions().onExit({ display_message: "Please try again later." });
   assert.equal(ui.run("state.error"), "Please try again later.");
+});
+
+test("Cancelling removal sends no request and keeps the bank connection", async () => {
+  const ui = bankUi();
+  ui.run('state.bankConnections = [{ id: 3, institution_name: "Test Bank" }]');
+  let confirmation;
+  ui.context.window.confirm = (message) => { confirmation = message; return false; };
+  await ui.run("removeBankConnection(3)");
+  assert.match(confirmation, /Test Bank/);
+  assert.match(confirmation, /Expenses already imported will be kept/);
+  assert.equal(ui.calls.length, 0);
+  assert.equal(ui.run("state.bankConnections.length"), 1);
+  assert.equal(ui.run("state.removingBankConnectionId"), null);
+});
+
+test("Confirmed removal deletes only the selected bank connection and refreshes", async () => {
+  const ui = bankUi();
+  ui.run(`
+    state.bankConnections = [{ id: 3, institution_name: "Test Bank" }, { id: 4, institution_name: "Other Bank" }];
+    globalThis.refreshCalls = 0;
+    refresh = async () => { refreshCalls += 1; };
+  `);
+  ui.context.window.confirm = () => true;
+  await ui.run("removeBankConnection(3)");
+  assert.equal(ui.calls.length, 1);
+  assert.equal(ui.calls[0].method, "DELETE");
+  assert.equal(ui.calls[0].url, "/api/trackers/1/bank/connections/3");
+  assert.equal(ui.run("refreshCalls"), 1);
+  assert.equal(ui.run("state.removingBankConnectionId"), null);
+});
+
+test("Failed removal shows an error and leaves the connection available", async () => {
+  const ui = bankUi();
+  ui.run('state.bankConnections = [{ id: 3, institution_name: "Test Bank" }]');
+  ui.context.window.confirm = () => true;
+  ui.context.fetch = async () => ({ ok: false, status: 500, text: async () => JSON.stringify({ detail: "Removal failed" }) });
+  await ui.run("removeBankConnection(3)");
+  assert.equal(ui.run("state.error"), "Removal failed");
+  assert.equal(ui.run("state.bankConnections[0].id"), 3);
+  assert.equal(ui.run("state.removingBankConnectionId"), null);
+});
+
+test("Removal cannot start during a sync or another removal", async () => {
+  const ui = bankUi();
+  ui.run('state.bankConnections = [{ id: 3, institution_name: "Test Bank" }]');
+  ui.context.window.confirm = () => { assert.fail("Busy bank actions must not prompt for removal"); };
+  ui.run("state.syncingBankConnectionId = 3");
+  await ui.run("removeBankConnection(3)");
+  ui.run("state.syncingBankConnectionId = null; state.removingBankConnectionId = 4");
+  await ui.run("removeBankConnection(3)");
+  assert.equal(ui.calls.length, 0);
 });

@@ -36,6 +36,7 @@ const state = {
   bankLookbackDays: Number(localStorage.getItem("buddy_bank_lookback_days")) || 8,
   bankDateSort: null,
   syncingBankConnectionId: null,
+  removingBankConnectionId: null,
   expenseTableFilters: {
     overview: { paidBy: "all", category: "all", type: "all" },
     monthly: { paidBy: "all", category: "all", type: "all" },
@@ -1169,9 +1170,12 @@ function renderBankImport() {
                         <td>${connection.status === "reauth_required" ? "Reconnection required" : escapeHtml(connection.status)}${connection.error_message ? `<div class="tiny">${escapeHtml(connection.error_message)}</div>` : ""}</td>
                         <td>${connection.last_synced_at ? escapeHtml(connection.last_synced_at.slice(0, 19).replace("T", " ")) : "Never"}</td>
                         <td>
-                          ${connection.status === "reauth_required" ? `<button class="button small primary" data-reconnect-bank="${connection.id}" ${state.syncingBankConnectionId !== null ? "disabled" : ""}>Reconnect</button>` : ""}
-                          <button class="button small" data-sync-bank="${connection.id}" ${state.syncingBankConnectionId !== null ? "disabled" : ""}>
+                          ${connection.status === "reauth_required" ? `<button class="button small primary" data-reconnect-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>Reconnect</button>` : ""}
+                          <button class="button small" data-sync-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>
                             ${state.syncingBankConnectionId === connection.id ? `<span class="spinner" aria-hidden="true"></span>Syncing…` : "Sync"}
+                          </button>
+                          <button class="button small danger" type="button" data-remove-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>
+                            ${state.removingBankConnectionId === connection.id ? "Removing…" : "Remove"}
                           </button>
                         </td>
                       </tr>
@@ -1683,6 +1687,7 @@ function bindForms() {
   });
   document.querySelector("#bank-lookback-days")?.addEventListener("change", updateBankLookbackDays);
   document.querySelectorAll("[data-sync-bank]").forEach((button) => button.addEventListener("click", () => syncBankConnection(Number(button.dataset.syncBank))));
+  document.querySelectorAll("[data-remove-bank]").forEach((button) => button.addEventListener("click", () => removeBankConnection(Number(button.dataset.removeBank))));
   document.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/admin/users/${button.dataset.deleteUser}`, { method: "DELETE" }))));
   document.querySelectorAll("[data-delete-category]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/categories/${button.dataset.deleteCategory}`, { method: "DELETE" }))));
   document.querySelectorAll("[data-delete-csv-config]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/csv-configs/${button.dataset.deleteCsvConfig}`, { method: "DELETE" }))));
@@ -2327,6 +2332,26 @@ async function updateBankLookbackDays(event) {
   state.bankLookbackDays = normalizeBankLookbackDays(event.target.value);
   localStorage.setItem("buddy_bank_lookback_days", String(state.bankLookbackDays));
   await refresh();
+}
+
+async function removeBankConnection(connectionId) {
+  if (state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null) return;
+  const tracker = currentTracker();
+  const connection = state.bankConnections.find((row) => row.id === connectionId);
+  if (!tracker || !connection) return;
+  if (!window.confirm(`Remove the bank connection to "${connection.institution_name}" from Buddy?\n\nIts synced accounts and transactions, including ignored transactions, will be deleted. Expenses already imported will be kept. This cannot be undone.`)) return;
+  state.removingBankConnectionId = connectionId;
+  state.error = "";
+  renderApp();
+  try {
+    await api(`/api/trackers/${tracker.id}/bank/connections/${connectionId}`, { method: "DELETE" });
+    await refresh();
+  } catch (error) {
+    state.error = error.message;
+  } finally {
+    state.removingBankConnectionId = null;
+    renderApp();
+  }
 }
 
 function syncBankLookbackDaysFromInput() {

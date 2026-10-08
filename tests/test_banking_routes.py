@@ -264,6 +264,41 @@ with TestClient(app=app) as client:
     with db_session() as session:
         assert session.get(BankTransaction, transaction_id).ignored_at is None
         assert session.query(Expense).one().is_shared is True
+
+    # Only the connection owner can remove it; synced rows go, imported expenses stay.
+    with db_session() as session:
+        transaction = session.get(BankTransaction, transaction_id)
+        account_id = transaction.bank_account_id
+        connection_id = transaction.account.bank_connection_id
+        ignored = BankTransaction(bank_account_id=account_id, provider_transaction_id="txn-ignored", date=utcnow().date(), amount=10, ignored_at=utcnow())
+        other_connection = BankConnection(tracker_id=tracker_id, user_id=transaction.account.connection.user_id, provider_item_id="item-other", encrypted_access_token="unused")
+        session.add_all([ignored, other_connection])
+        session.flush()
+        ignored_id, other_connection_id = ignored.id, other_connection.id
+        expense_id = session.query(Expense).one().id
+    remove_url = f"/api/trackers/{tracker_id}/bank/connections/{connection_id}"
+    assert client.delete(remove_url).status_code == 401
+    for token in ["member-token", "admin-token"]:
+        response = client.delete(remove_url, headers={"authorization": "Bearer " + token})
+        assert response.status_code == 404, response.text
+    response = client.delete(f"/api/trackers/{other_tracker_id}/bank/connections/{connection_id}", headers=owner_headers)
+    assert response.status_code == 404, response.text
+    response = client.delete(remove_url, headers=owner_headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "ok"}, response.text
+    with db_session() as session:
+        assert session.get(BankConnection, connection_id) is None
+        assert session.get(BankAccount, account_id) is None
+        assert session.get(BankTransaction, transaction_id) is None
+        assert session.get(BankTransaction, ignored_id) is None
+        assert session.get(Expense, expense_id) is not None
+        assert session.get(Expense, expense_id).bank_transactions == []
+        assert session.get(BankConnection, other_connection_id) is not None
+    response = client.get(f"/api/trackers/{tracker_id}/bank/connections", headers=owner_headers)
+    assert [row["id"] for row in response.json()] == [other_connection_id], response.text
+    assert client.get(base_url, headers=owner_headers).json() == []
+    assert client.get(ignored_url, headers=owner_headers).json() == []
+    assert client.delete(remove_url, headers=owner_headers).status_code == 404
 """
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(
