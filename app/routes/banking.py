@@ -7,7 +7,8 @@ from litestar.exceptions import HTTPException
 from litestar.params import Body
 from sqlalchemy.orm import joinedload
 
-from app.banking.plaid import PlaidClient
+from app.banking.crypto import decrypt_token
+from app.banking.plaid import PlaidApiError, PlaidClient
 from app.banking.service import (
     create_bank_connection,
     ignore_bank_transaction,
@@ -98,13 +99,46 @@ class BankingController(Controller):
             )
             return [serialize_bank_connection(connection) for connection in rows]
 
-    @post("/connections/{connection_id:int}/sync", sync_to_thread=True)
-    def sync_connection(self, request: Request, tracker_id: int, connection_id: int, days: int = 8) -> dict[str, Any]:
+    @post("/connections/{connection_id:int}/link-token", sync_to_thread=True)
+    def reconnect_link_token(
+        self, request: Request, tracker_id: int, connection_id: int,
+        data: Annotated[BankLinkTokenPayload | None, Body()] = None,
+    ) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:
             connection = load_bank_connection_for_user(session, tracker_id, connection_id, user)
-            counts = sync_bank_connection(session, connection)
-            return {"status": "ok", "days": normalized_review_days(days), **counts}
+            if connection.provider != "plaid":
+                raise HTTPException(status_code=400, detail="Only Plaid bank connections can be reconnected")
+            db_user = session.get(User, user.id)
+            if db_user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            require_bank_link_two_factor(db_user, data.two_factor_code if data is not None else None)
+            try:
+                link_token = PlaidClient().create_update_link_token(user, decrypt_token(connection.encrypted_access_token))
+            except PlaidApiError as exc:
+                raise HTTPException(status_code=502, detail="Unable to open bank reconnection. Please try again later.") from exc
+            return {"link_token": link_token}
+
+    @post("/connections/{connection_id:int}/sync", sync_to_thread=True)
+    def sync_connection(self, request: Request, tracker_id: int, connection_id: int, days: int = 8) -> dict[str, Any]:
+        user = require_user(request)
+        sync_error: HTTPException | None = None
+        with db_session() as session:
+            connection = load_bank_connection_for_user(session, tracker_id, connection_id, user)
+            try:
+                counts = sync_bank_connection(session, connection)
+            except HTTPException as exc:
+                if not isinstance(exc.extra, dict) or "error_code" not in exc.extra:
+                    raise
+                # Discard partial pages, then commit only the connection's failure status.
+                session.rollback()
+                connection = load_bank_connection_for_user(session, tracker_id, connection_id, user)
+                connection.status = "reauth_required" if exc.extra["error_code"] == "ITEM_LOGIN_REQUIRED" else "error"
+                connection.error_message = exc.detail
+                sync_error = exc
+        if sync_error is not None:
+            raise sync_error
+        return {"status": "ok", "days": normalized_review_days(days), **counts}
 
     @delete("/connections/{connection_id:int}", status_code=200, sync_to_thread=True)
     def delete_connection(self, request: Request, tracker_id: int, connection_id: int) -> dict[str, str]:

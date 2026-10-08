@@ -1166,9 +1166,10 @@ function renderBankImport() {
                       <tr>
                         <td>${escapeHtml(connection.institution_name)}</td>
                         <td>${connection.accounts.map((account) => `${escapeHtml(account.name)} ${account.mask ? `**${escapeHtml(account.mask)}` : ""}`).join("<br />")}</td>
-                        <td>${escapeHtml(connection.status)}${connection.error_message ? `<div class="tiny">${escapeHtml(connection.error_message)}</div>` : ""}</td>
+                        <td>${connection.status === "reauth_required" ? "Reconnection required" : escapeHtml(connection.status)}${connection.error_message ? `<div class="tiny">${escapeHtml(connection.error_message)}</div>` : ""}</td>
                         <td>${connection.last_synced_at ? escapeHtml(connection.last_synced_at.slice(0, 19).replace("T", " ")) : "Never"}</td>
                         <td>
+                          ${connection.status === "reauth_required" ? `<button class="button small primary" data-reconnect-bank="${connection.id}" ${state.syncingBankConnectionId !== null ? "disabled" : ""}>Reconnect</button>` : ""}
                           <button class="button small" data-sync-bank="${connection.id}" ${state.syncingBankConnectionId !== null ? "disabled" : ""}>
                             ${state.syncingBankConnectionId === connection.id ? `<span class="spinner" aria-hidden="true"></span>Syncing…` : "Sync"}
                           </button>
@@ -1652,7 +1653,8 @@ function bindForms() {
   document.querySelectorAll("[data-preview-shared]").forEach((input) => input.addEventListener("change", updatePreviewSharedValue));
   document.querySelector("#confirm-csv-import")?.addEventListener("click", confirmCsvImport);
   document.querySelector("#bulk-delete-expenses")?.addEventListener("click", bulkDeleteExpenses);
-  document.querySelector("#connect-bank")?.addEventListener("click", connectBank);
+  document.querySelector("#connect-bank")?.addEventListener("click", () => connectBank());
+  document.querySelectorAll("[data-reconnect-bank]").forEach((button) => button.addEventListener("click", () => connectBank(Number(button.dataset.reconnectBank))));
   document.querySelector("#bank-2fa-form")?.addEventListener("submit", submitBankTwoFactor);
   document.querySelector("#cancel-bank-2fa")?.addEventListener("click", () => {
     state.bankTwoFactor = { open: false };
@@ -2234,7 +2236,7 @@ async function submitMonthlyShares(event) {
   );
 }
 
-async function connectBank() {
+async function connectBank(connectionId = null) {
   if (!window.Plaid) {
     state.error = "Plaid Link did not load. Check your network or content blocker.";
     renderApp();
@@ -2245,27 +2247,33 @@ async function connectBank() {
     renderApp();
     return;
   }
-  state.bankTwoFactor = { open: true };
+  state.bankTwoFactor = { open: true, connectionId };
   renderApp();
 }
 
 async function submitBankTwoFactor(event) {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+  const connectionId = state.bankTwoFactor.connectionId;
   state.bankTwoFactor = { open: false };
-  await openPlaidLink(data.two_factor_code);
+  await openPlaidLink(data.two_factor_code, connectionId);
 }
 
-async function openPlaidLink(twoFactorCode) {
+async function openPlaidLink(twoFactorCode, connectionId = null) {
   const tracker = currentTracker();
   try {
-    const { link_token: linkToken, bank_link_token: bankLinkToken } = await api(`/api/trackers/${tracker.id}/bank/link-token`, {
+    const linkPath = connectionId ? `connections/${connectionId}/link-token` : "link-token";
+    const { link_token: linkToken, bank_link_token: bankLinkToken } = await api(`/api/trackers/${tracker.id}/bank/${linkPath}`, {
       method: "POST",
       body: JSON.stringify({ two_factor_code: twoFactorCode }),
     });
     const handler = window.Plaid.create({
       token: linkToken,
       onSuccess: async (publicToken, metadata) => {
+        if (connectionId) {
+          await syncBankConnection(connectionId, tracker.id);
+          return;
+        }
         await mutate(() =>
           api(`/api/trackers/${tracker.id}/bank/exchange-token`, {
             method: "POST",
@@ -2277,8 +2285,11 @@ async function openPlaidLink(twoFactorCode) {
           }),
         );
       },
-      onExit: (_error, metadata) => {
-        if (metadata?.status === "requires_credentials") return;
+      onExit: (error) => {
+        if (error) {
+          state.error = error.display_message || "Bank connection could not be updated. Please try again.";
+          renderApp();
+        }
       },
     });
     handler.open();
@@ -2288,14 +2299,24 @@ async function openPlaidLink(twoFactorCode) {
   }
 }
 
-async function syncBankConnection(connectionId) {
-  const tracker = currentTracker();
+async function syncBankConnection(connectionId, trackerId = currentTracker().id) {
   syncBankLookbackDaysFromInput();
   const params = new URLSearchParams({ days: String(state.bankLookbackDays) });
   state.syncingBankConnectionId = connectionId;
+  state.error = "";
   renderApp();
   try {
-    await mutate(() => api(`/api/trackers/${tracker.id}/bank/connections/${connectionId}/sync?${params}`, { method: "POST" }));
+    await api(`/api/trackers/${trackerId}/bank/connections/${connectionId}/sync?${params}`, { method: "POST" });
+    await refresh();
+  } catch (error) {
+    if (currentTracker()?.id === trackerId) {
+      try {
+        state.bankConnections = await api(`/api/trackers/${trackerId}/bank/connections`);
+      } catch (_refreshError) {
+        // Keep the sync failure visible if refreshing the connection list also fails.
+      }
+    }
+    state.error = error.message;
   } finally {
     state.syncingBankConnectionId = null;
     renderApp();

@@ -8,6 +8,7 @@ import httpx
 
 from app.banking.plaid import PlaidApiError, PlaidClient
 from app.config import Settings
+from app.models import User
 
 
 class PlaidClientTests(unittest.TestCase):
@@ -72,6 +73,22 @@ class PlaidClientTests(unittest.TestCase):
         self.assertNotIn("cursor", requests[0])
         self.assertEqual(requests[1]["cursor"], "cursor-test")
         self.assertEqual(requests[1]["count"], 500)
+
+    def test_update_link_token_uses_existing_item_without_initial_link_products(self) -> None:
+        requests = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/link/token/create")
+            requests.append(json.loads(request.content))
+            return httpx.Response(200, json={"link_token": "link-update"})
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            token = PlaidClient(http_client).create_update_link_token(User(id=42), "existing-access-token")
+        self.assertEqual(token, "link-update")
+        self.assertEqual(requests[0]["access_token"], "existing-access-token")
+        self.assertEqual(requests[0]["user"], {"client_user_id": "42"})
+        self.assertNotIn("products", requests[0])
+        self.assertNotIn("transactions", requests[0])
 
 
 if __name__ == "__main__":

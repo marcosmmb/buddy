@@ -135,6 +135,8 @@ Check **Shared** for transactions that should be split among tracker members; un
 
 Buddy does not automatically match categories from Plaid. Plaid category data is kept only in the raw transaction payload for debugging. Syncing is manual from the Bank Import tab, so private LAN deployments do not need a public callback URL.
 
+If a connection shows **Reconnection required**, click **Reconnect**, enter a fresh Buddy 2FA code, and complete the bank login or consent prompts in Plaid Link. Buddy then retries the sync using the existing connection, preserving its accounts, review decisions, imported expenses, and sync cursor.
+
 ## Data Storage
 
 Buddy stores its data in SQLite.

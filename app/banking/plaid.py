@@ -93,6 +93,15 @@ class PlaidClient:
     def exchange_public_token(self, public_token: str) -> dict[str, Any]:
         return self.request("/item/public_token/exchange", {"public_token": public_token})
 
+    def create_update_link_token(self, user: User, access_token: str) -> str:
+        return self.request("/link/token/create", {
+            "client_name": "Buddy",
+            "country_codes": plaid_list(settings.plaid_country_codes),
+            "language": "en",
+            "user": {"client_user_id": str(user.id)},
+            "access_token": access_token,
+        })["link_token"]
+
     def get_accounts(self, access_token: str) -> list[dict[str, Any]]:
         return self.request("/accounts/get", {"access_token": access_token}).get("accounts", [])
 

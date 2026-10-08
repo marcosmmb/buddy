@@ -235,11 +235,12 @@ def sync_bank_connection(session: Session, connection: BankConnection, plaid_cli
             if exc.error_code == "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" and cursor != old_cursor:
                 cursor = old_cursor
                 continue
-            connection.status = "error"
-            connection.error_message = str(exc)
+            needs_reauthentication = exc.error_code == "ITEM_LOGIN_REQUIRED"
+            connection.status = "reauth_required" if needs_reauthentication else "error"
+            connection.error_message = "Reconnect this bank account to continue syncing transactions." if needs_reauthentication else str(exc)
             raise HTTPException(
-                status_code=502,
-                detail=str(exc),
+                status_code=409 if needs_reauthentication else 502,
+                detail=connection.error_message,
                 extra={
                     "error_code": exc.error_code,
                     "error_type": exc.error_type,
