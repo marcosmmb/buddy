@@ -7,6 +7,6 @@ from app.utils import FRONTEND_DIR
 
 
 class FrontendController(Controller):
-    @get("/")
+    @get("/", sync_to_thread=True)
     def index(self) -> Response[str]:
         return Response(content=(FRONTEND_DIR / "index.html").read_text(), media_type="text/html")

@@ -26,7 +26,7 @@ from app.utils import (
 class TrackerController(Controller):
     path = "/api/trackers"
 
-    @get()
+    @get(sync_to_thread=True)
     def list_trackers(self, request: Request) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
@@ -35,7 +35,7 @@ class TrackerController(Controller):
                 query = query.join(TrackerMember).filter(TrackerMember.user_id == user.id)
             return [serialize_tracker(tracker) for tracker in query.order_by(Tracker.name).all()]
 
-    @post()
+    @post(sync_to_thread=True)
     def create_tracker(self, request: Request, data: Annotated[TrackerCreatePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         require_admin(user)
@@ -72,7 +72,7 @@ class TrackerController(Controller):
             )
             return serialize_tracker(tracker)
 
-    @put("/{tracker_id:int}")
+    @put("/{tracker_id:int}", sync_to_thread=True)
     def update_tracker(self, request: Request, tracker_id: int, data: Annotated[TrackerUpdatePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -103,7 +103,7 @@ class TrackerController(Controller):
             )
             return serialize_tracker(tracker)
 
-    @delete("/{tracker_id:int}", status_code=200)
+    @delete("/{tracker_id:int}", status_code=200, sync_to_thread=True)
     def delete_tracker(self, request: Request, tracker_id: int) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:
@@ -120,7 +120,7 @@ class TrackerController(Controller):
             session.delete(tracker)
         return {"status": "ok"}
 
-    @put("/{tracker_id:int}/members")
+    @put("/{tracker_id:int}/members", sync_to_thread=True)
     def update_members(self, request: Request, tracker_id: int, data: Annotated[MemberUpdatePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -165,7 +165,7 @@ class TrackerController(Controller):
             )
             return serialize_tracker(tracker)
 
-    @get("/{tracker_id:int}/monthly-shares")
+    @get("/{tracker_id:int}/monthly-shares", sync_to_thread=True)
     def monthly_shares(self, request: Request, tracker_id: int, month: str) -> dict[str, Any]:
         user = require_user(request)
         selected_month = normalize_month(month)
@@ -175,7 +175,7 @@ class TrackerController(Controller):
                 raise HTTPException(status_code=404, detail="Tracker not found")
             return monthly_share_response(session, tracker, selected_month)
 
-    @put("/{tracker_id:int}/monthly-shares")
+    @put("/{tracker_id:int}/monthly-shares", sync_to_thread=True)
     def update_monthly_shares(self, request: Request, tracker_id: int, data: Annotated[MonthlySharesPayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         selected_month = normalize_month(data.month)

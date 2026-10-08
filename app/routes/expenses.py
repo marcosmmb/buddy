@@ -17,7 +17,7 @@ from app.utils import load_tracker_member_context, require_user, validate_expens
 class ExpenseController(Controller):
     path = "/api/trackers/{tracker_id:int}/expenses"
 
-    @get()
+    @get(sync_to_thread=True)
     def expenses(self, request: Request, tracker_id: int, month: str | None = None, year: int | None = None) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
@@ -26,7 +26,7 @@ class ExpenseController(Controller):
             rows = expense_query(session, tracker_id, month=month, year=year).all()
             return [serialize_expense(expense) for expense in rows]
 
-    @post()
+    @post(sync_to_thread=True)
     def create_expense(self, request: Request, tracker_id: int, data: Annotated[ExpenseCreatePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -52,7 +52,7 @@ class ExpenseController(Controller):
             )
             return serialize_expense(expense)
 
-    @put("/{expense_id:int}")
+    @put("/{expense_id:int}", sync_to_thread=True)
     def update_expense(self, request: Request, tracker_id: int, expense_id: int, data: Annotated[ExpenseCreatePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -77,7 +77,7 @@ class ExpenseController(Controller):
             )
             return serialize_expense(expense)
 
-    @delete("/{expense_id:int}", status_code=200)
+    @delete("/{expense_id:int}", status_code=200, sync_to_thread=True)
     def delete_expense(self, request: Request, tracker_id: int, expense_id: int) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:
@@ -89,7 +89,7 @@ class ExpenseController(Controller):
                 raise HTTPException(status_code=404, detail="Expense not found")
         return {"status": "ok"}
 
-    @post("/bulk-delete", status_code=200)
+    @post("/bulk-delete", status_code=200, sync_to_thread=True)
     def bulk_delete_expenses(self, request: Request, tracker_id: int, data: Annotated[ExpenseBulkDeletePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:

@@ -17,7 +17,7 @@ from app.utils import require_user
 class CategoryController(Controller):
     path = "/api/trackers/{tracker_id:int}/categories"
 
-    @get()
+    @get(sync_to_thread=True)
     def categories(self, request: Request, tracker_id: int) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
@@ -26,7 +26,7 @@ class CategoryController(Controller):
             categories = session.query(Category).filter(Category.tracker_id == tracker_id).order_by(Category.name).all()
             return [serialize_category(category) for category in categories]
 
-    @post()
+    @post(sync_to_thread=True)
     def create_category(self, request: Request, tracker_id: int, data: Annotated[CategoryCreatePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -40,7 +40,7 @@ class CategoryController(Controller):
                 raise HTTPException(status_code=409, detail="That category already exists") from exc
             return serialize_category(category)
 
-    @delete("/{category_id:int}", status_code=200)
+    @delete("/{category_id:int}", status_code=200, sync_to_thread=True)
     def delete_category(self, request: Request, tracker_id: int, category_id: int) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:

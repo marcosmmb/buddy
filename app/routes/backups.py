@@ -15,7 +15,7 @@ from app.utils import require_admin, require_user
 class BackupController(Controller):
     path = "/api/trackers/{tracker_id:int}/backup"
 
-    @get()
+    @get(sync_to_thread=True)
     def export_backup(self, request: Request, tracker_id: int) -> Response[str]:
         user = require_user(request)
         require_admin(user)
@@ -28,7 +28,7 @@ class BackupController(Controller):
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
 
-    @post("/restore")
+    @post("/restore", sync_to_thread=True)
     def restore_backup(self, request: Request, tracker_id: int, data: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
         user = require_user(request)
         require_admin(user)

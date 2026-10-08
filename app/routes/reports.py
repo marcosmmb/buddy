@@ -24,7 +24,7 @@ from app.utils import require_user
 class ReportController(Controller):
     path = "/api/trackers/{tracker_id:int}"
 
-    @get("/period-options")
+    @get("/period-options", sync_to_thread=True)
     def tracker_period_options(self, request: Request, tracker_id: int) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -32,7 +32,7 @@ class ReportController(Controller):
                 raise HTTPException(status_code=404, detail="Tracker not found")
             return period_options(session, tracker_id)
 
-    @get("/overview")
+    @get("/overview", sync_to_thread=True)
     def overview(
         self,
         request: Request,

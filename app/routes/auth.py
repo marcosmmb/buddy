@@ -38,7 +38,7 @@ from app.utils import normalize_currency, require_user
 class AuthController(Controller):
     path = "/api/auth"
 
-    @post("/login")
+    @post("/login", sync_to_thread=True)
     def login(self, data: Annotated[LoginPayload, Body()]) -> dict[str, Any]:
         with db_session() as session:
             user = session.query(User).filter(User.email == data.email.strip().lower()).one_or_none()
@@ -55,7 +55,7 @@ class AuthController(Controller):
             session.add(SessionToken(token=token, user_id=user.id))
             return {"two_factor_required": False, "token": token, "user": serialize_user(user)}
 
-    @post("/login/verify")
+    @post("/login/verify", sync_to_thread=True)
     def verify_login(self, data: Annotated[TwoFactorLoginPayload, Body()]) -> dict[str, Any]:
         with db_session() as session:
             user = consume_login_challenge(session, data.challenge_token, data.code)
@@ -65,7 +65,7 @@ class AuthController(Controller):
             session.add(SessionToken(token=token, user_id=user.id))
             return {"token": token, "user": serialize_user(user)}
 
-    @post("/register")
+    @post("/register", sync_to_thread=True)
     def register(self, data: Annotated[RegisterPayload, Body()]) -> dict[str, Any]:
         with db_session() as session:
             user = User(
@@ -85,7 +85,7 @@ class AuthController(Controller):
             session.add(SessionToken(token=token, user_id=user.id))
             return {"token": token, "user": serialize_user(user)}
 
-    @delete("/logout", status_code=200)
+    @delete("/logout", status_code=200, sync_to_thread=True)
     def logout(self, request: Request) -> dict[str, str]:
         auth_header = request.headers.get("authorization", "")
         token = auth_header.split(" ", 1)[1].strip() if " " in auth_header else ""
@@ -97,11 +97,11 @@ class AuthController(Controller):
 class ProfileController(Controller):
     path = "/api/me"
 
-    @get()
+    @get(sync_to_thread=True)
     def me(self, request: Request) -> dict[str, Any]:
         return serialize_user(require_user(request))
 
-    @put("/preferences")
+    @put("/preferences", sync_to_thread=True)
     def update_preferences(self, request: Request, data: Annotated[PreferencesPayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -123,7 +123,7 @@ class ProfileController(Controller):
             session.flush()
             return serialize_user(db_user)
 
-    @post("/2fa/setup")
+    @post("/2fa/setup", sync_to_thread=True)
     def setup_two_factor(self, request: Request, data: Annotated[TwoFactorSetupPayload, Body()]) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:
@@ -143,7 +143,7 @@ class ProfileController(Controller):
                 "qr_svg": provisioning_qr_svg(uri),
             }
 
-    @post("/2fa/enable")
+    @post("/2fa/enable", sync_to_thread=True)
     def enable_two_factor(self, request: Request, data: Annotated[TwoFactorEnablePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -159,7 +159,7 @@ class ProfileController(Controller):
             session.flush()
             return serialize_user(db_user)
 
-    @delete("/2fa", status_code=200)
+    @delete("/2fa", status_code=200, sync_to_thread=True)
     def disable_two_factor(self, request: Request, data: Annotated[TwoFactorDisablePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:

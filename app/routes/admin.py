@@ -18,7 +18,7 @@ from app.utils import normalize_currency, require_admin, require_user
 class AdminUserController(Controller):
     path = "/api/admin/users"
 
-    @post()
+    @post(sync_to_thread=True)
     def create_user(self, request: Request, data: Annotated[AdminUserCreatePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         require_admin(user)
@@ -38,7 +38,7 @@ class AdminUserController(Controller):
                 raise HTTPException(status_code=409, detail="A user with that email already exists") from exc
             return serialize_user(new_user)
 
-    @delete("/{user_id:int}", status_code=200)
+    @delete("/{user_id:int}", status_code=200, sync_to_thread=True)
     def delete_user(self, request: Request, user_id: int) -> dict[str, str]:
         user = require_user(request)
         require_admin(user)

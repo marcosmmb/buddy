@@ -29,7 +29,7 @@ from app.utils import (
 class CsvController(Controller):
     path = "/api/trackers/{tracker_id:int}"
 
-    @get("/csv-configs")
+    @get("/csv-configs", sync_to_thread=True)
     def csv_configs(self, request: Request, tracker_id: int) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
@@ -38,7 +38,7 @@ class CsvController(Controller):
             configs = session.query(CsvImportConfig).filter(CsvImportConfig.tracker_id == tracker_id).order_by(CsvImportConfig.name).all()
             return [serialize_csv_config(config) for config in configs]
 
-    @post("/csv-configs")
+    @post("/csv-configs", sync_to_thread=True)
     def create_csv_config(self, request: Request, tracker_id: int, data: Annotated[CsvImportConfigPayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         require_admin(user)
@@ -62,7 +62,7 @@ class CsvController(Controller):
                 raise HTTPException(status_code=409, detail="A CSV config with that name already exists") from exc
             return serialize_csv_config(config)
 
-    @delete("/csv-configs/{config_id:int}", status_code=200)
+    @delete("/csv-configs/{config_id:int}", status_code=200, sync_to_thread=True)
     def delete_csv_config(self, request: Request, tracker_id: int, config_id: int) -> dict[str, str]:
         user = require_user(request)
         require_admin(user)
@@ -72,7 +72,7 @@ class CsvController(Controller):
                 raise HTTPException(status_code=404, detail="CSV config not found")
         return {"status": "ok"}
 
-    @post("/csv-imports/preview", status_code=200)
+    @post("/csv-imports/preview", status_code=200, sync_to_thread=True)
     def preview_csv_import(self, request: Request, tracker_id: int, data: Annotated[CsvPreviewPayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -82,7 +82,7 @@ class CsvController(Controller):
                 raise HTTPException(status_code=404, detail="CSV config not found")
             return build_csv_preview_rows(session, tracker, tracker_id, config, data)
 
-    @post("/csv-imports")
+    @post("/csv-imports", sync_to_thread=True)
     def import_csv(self, request: Request, tracker_id: int, data: Annotated[CsvImportPayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -110,7 +110,7 @@ class CsvController(Controller):
             session.flush()
             return {"imported": imported, "skipped": skipped}
 
-    @get("/csv-exports")
+    @get("/csv-exports", sync_to_thread=True)
     def export_csv(self, request: Request, tracker_id: int, config_id: int, month: str | None = None) -> Response[str]:
         user = require_user(request)
         selected_month = normalize_month(month or date.today().strftime("%Y-%m"))

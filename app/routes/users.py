@@ -13,11 +13,11 @@ from app.utils import require_user
 class UserController(Controller):
     path = "/api"
 
-    @get("/currencies")
+    @get("/currencies", sync_to_thread=False)
     def currencies(self) -> list[str]:
         return SUPPORTED_CURRENCIES
 
-    @get("/users")
+    @get("/users", sync_to_thread=True)
     def users(self, request: Request) -> list[dict[str, Any]]:
         require_user(request)
         with db_session() as session:

@@ -40,7 +40,7 @@ def require_bank_link_two_factor(user: User, code: str | None) -> None:
 class BankingController(Controller):
     path = "/api/trackers/{tracker_id:int}/bank"
 
-    @get("/config")
+    @get("/config", sync_to_thread=True)
     def config(self, request: Request, tracker_id: int) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -48,7 +48,7 @@ class BankingController(Controller):
                 raise HTTPException(status_code=404, detail="Tracker not found")
         return {"plaid_configured": settings.plaid_configured, "plaid_env": settings.plaid_env}
 
-    @post("/link-token")
+    @post("/link-token", sync_to_thread=True)
     def link_token(self, request: Request, tracker_id: int, data: Annotated[BankLinkTokenPayload | None, Body()] = None) -> dict[str, str]:
         user = require_user(request)
         if not settings.plaid_configured:
@@ -64,7 +64,7 @@ class BankingController(Controller):
             bank_link_challenge = create_bank_link_challenge(session, db_user)
             return {"link_token": PlaidClient().create_link_token(user, tracker), "bank_link_token": bank_link_challenge.token}
 
-    @post("/exchange-token")
+    @post("/exchange-token", sync_to_thread=True)
     def exchange_token(self, request: Request, tracker_id: int, data: Annotated[BankTokenExchangePayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -83,7 +83,7 @@ class BankingController(Controller):
             )
             return serialize_bank_connection(connection)
 
-    @get("/connections")
+    @get("/connections", sync_to_thread=True)
     def connections(self, request: Request, tracker_id: int) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
@@ -98,7 +98,7 @@ class BankingController(Controller):
             )
             return [serialize_bank_connection(connection) for connection in rows]
 
-    @post("/connections/{connection_id:int}/sync")
+    @post("/connections/{connection_id:int}/sync", sync_to_thread=True)
     def sync_connection(self, request: Request, tracker_id: int, connection_id: int, days: int = 8) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
@@ -106,7 +106,7 @@ class BankingController(Controller):
             counts = sync_bank_connection(session, connection)
             return {"status": "ok", "days": normalized_review_days(days), **counts}
 
-    @delete("/connections/{connection_id:int}", status_code=200)
+    @delete("/connections/{connection_id:int}", status_code=200, sync_to_thread=True)
     def delete_connection(self, request: Request, tracker_id: int, connection_id: int) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:
@@ -114,7 +114,7 @@ class BankingController(Controller):
             session.delete(connection)
             return {"status": "ok"}
 
-    @get("/transactions")
+    @get("/transactions", sync_to_thread=True)
     def transactions(self, request: Request, tracker_id: int, days: int = 8) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
@@ -126,7 +126,7 @@ class BankingController(Controller):
                 for transaction in list_review_bank_transactions(session, tracker_id, user, days)
             ]
 
-    @get("/transactions/ignored")
+    @get("/transactions/ignored", sync_to_thread=True)
     def ignored_transactions(self, request: Request, tracker_id: int, days: int = 8) -> list[dict[str, Any]]:
         user = require_user(request)
         with db_session() as session:
@@ -137,21 +137,21 @@ class BankingController(Controller):
                 for transaction in list_ignored_bank_transactions(session, tracker_id, user, days)
             ]
 
-    @post("/transactions/{transaction_id:int}/restore", status_code=200)
+    @post("/transactions/{transaction_id:int}/restore", status_code=200, sync_to_thread=True)
     def restore_transaction(self, request: Request, tracker_id: int, transaction_id: int) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:
             restore_bank_transaction(session, tracker_id, transaction_id, user)
             return {"status": "ok"}
 
-    @post("/transactions/{transaction_id:int}/ignore", status_code=200)
+    @post("/transactions/{transaction_id:int}/ignore", status_code=200, sync_to_thread=True)
     def ignore_transaction(self, request: Request, tracker_id: int, transaction_id: int) -> dict[str, str]:
         user = require_user(request)
         with db_session() as session:
             ignore_bank_transaction(session, tracker_id, transaction_id, user)
             return {"status": "ok"}
 
-    @post("/transactions/import")
+    @post("/transactions/import", sync_to_thread=True)
     def import_transactions(self, request: Request, tracker_id: int, data: Annotated[BankTransactionImportPayload, Body()]) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
