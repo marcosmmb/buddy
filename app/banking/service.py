@@ -194,17 +194,56 @@ def create_bank_connection(
     return connection
 
 
-def upsert_accounts(session: Session, connection: BankConnection, accounts: list[dict[str, Any]]) -> None:
+def upsert_accounts(
+    session: Session, connection: BankConnection, accounts: list[dict[str, Any]], *, reconcile_existing: bool = False,
+) -> None:
     existing = {
         account.provider_account_id: account
         for account in session.query(BankAccount).filter(BankAccount.bank_connection_id == connection.id).all()
     }
+    provider_ids = {row["account_id"] for row in accounts}
+    by_persistent_id: dict[str, list[BankAccount]] = {}
+    persistent_id_counts: dict[str, int] = {}
+    by_details: dict[tuple[str, str, str, str], list[BankAccount]] = {}
+    rows_by_details: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    for account in existing.values():
+        if account.persistent_account_id:
+            by_persistent_id.setdefault(account.persistent_account_id, []).append(account)
+        key = (account.mask, account.type, account.subtype, account.currency)
+        if all(key):
+            by_details.setdefault(key, []).append(account)
+    for row in accounts:
+        if row.get("persistent_account_id"):
+            persistent_id = row["persistent_account_id"]
+            persistent_id_counts[persistent_id] = persistent_id_counts.get(persistent_id, 0) + 1
+        currency = row.get("balances", {}).get("iso_currency_code") or row.get("balances", {}).get("unofficial_currency_code") or ""
+        key = (row.get("mask") or "", row.get("type") or "", row.get("subtype") or "", currency)
+        if all(key):
+            rows_by_details.setdefault(key, []).append(row)
+    reused_ids: set[int] = set()
     for row in accounts:
         provider_account_id = row["account_id"]
         account = existing.get(provider_account_id)
+        persistent_id = row.get("persistent_account_id")
+        if account is None and reconcile_existing and (not persistent_id or persistent_id_counts[persistent_id] == 1):
+            candidates = by_persistent_id.get(persistent_id, []) if persistent_id else []
+            if not candidates:
+                currency = row.get("balances", {}).get("iso_currency_code") or row.get("balances", {}).get("unofficial_currency_code") or ""
+                key = (row.get("mask") or "", row.get("type") or "", row.get("subtype") or "", currency)
+                # Partial account numbers are useful only when the match is unique in both snapshots.
+                candidates = by_details.get(key, []) if len(rows_by_details.get(key, [])) == 1 else []
+                candidates = [candidate for candidate in candidates if not (
+                    persistent_id and candidate.persistent_account_id and persistent_id != candidate.persistent_account_id
+                )]
+            if len(candidates) == 1 and candidates[0].provider_account_id not in provider_ids and candidates[0].id not in reused_ids:
+                account = candidates[0]
+                reused_ids.add(account.id)
+                account.provider_account_id = provider_account_id
         if account is None:
             account = BankAccount(bank_connection_id=connection.id, provider_account_id=provider_account_id, name=row.get("name") or "Account")
             session.add(account)
+        existing[provider_account_id] = account
+        account.persistent_account_id = persistent_id or account.persistent_account_id
         account.name = row.get("name") or account.name
         account.mask = row.get("mask") or ""
         account.type = row.get("type") or ""
@@ -213,7 +252,9 @@ def upsert_accounts(session: Session, connection: BankConnection, accounts: list
     session.flush()
 
 
-def sync_bank_connection(session: Session, connection: BankConnection, plaid_client: PlaidClient | None = None) -> dict[str, int]:
+def sync_bank_connection(
+    session: Session, connection: BankConnection, plaid_client: PlaidClient | None = None, *, refresh_accounts: bool = False,
+) -> dict[str, int]:
     if connection.provider == "demo":
         connection.last_synced_at = utcnow()
         session.flush()
@@ -230,6 +271,14 @@ def sync_bank_connection(session: Session, connection: BankConnection, plaid_cli
 
     while True:
         try:
+            if refresh_accounts:
+                upsert_accounts(session, connection, plaid_client.get_accounts(access_token), reconcile_existing=True)
+                # Retain the old IDs as aliases for any historical updates in this sync batch.
+                account_by_provider_id.update({
+                    account.provider_account_id: account
+                    for account in session.query(BankAccount).filter(BankAccount.bank_connection_id == connection.id).all()
+                })
+                refresh_accounts = False
             data = plaid_client.sync_transactions(access_token, cursor)
         except PlaidApiError as exc:
             if exc.error_code == "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" and cursor != old_cursor:

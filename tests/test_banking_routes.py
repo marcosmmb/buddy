@@ -45,14 +45,14 @@ with TestClient(app=app) as client:
         )
         session.add(connection)
         session.flush()
-        account = BankAccount(bank_connection_id=connection.id, provider_account_id="account-test", name="Checking")
+        account = BankAccount(bank_connection_id=connection.id, provider_account_id="account-test", name="Checking", mask="1234", type="depository", subtype="checking", currency="CAD")
         session.add(account)
         session.flush()
         ignored_at = utcnow()
         transaction = BankTransaction(bank_account_id=account.id, provider_transaction_id="existing-transaction", date=utcnow().date(), amount=42, ignored_at=ignored_at)
         session.add(transaction)
         session.flush()
-        tracker_id, connection_id, user_id, transaction_id = tracker.id, connection.id, user.id, transaction.id
+        tracker_id, connection_id, user_id, transaction_id, account_id = tracker.id, connection.id, user.id, transaction.id, account.id
         encrypted_access_token = connection.encrypted_access_token
 
     base_url = f"/api/trackers/{tracker_id}/bank"
@@ -119,10 +119,17 @@ with TestClient(app=app) as client:
 
     # Completing Link retries the existing sync rather than exchanging a new token.
     with patch("app.banking.service.PlaidClient") as plaid:
-        plaid.return_value.sync_transactions.return_value = {"next_cursor": "recovered-cursor", "has_more": False}
-        response = client.post(f"{base_url}/connections/{connection_id}/sync", headers=owner_headers)
+        account_details = {"account_id": "refreshed-account", "name": "Updated Checking", "mask": "1234", "type": "depository", "subtype": "checking", "balances": {"iso_currency_code": "CAD"}}
+        plaid.return_value.get_accounts.return_value = [account_details]
+        plaid.return_value.sync_transactions.return_value = {
+            "added": [{"transaction_id": "new-transaction", "account_id": "refreshed-account", "amount": 10}],
+            "next_cursor": "recovered-cursor", "has_more": False,
+        }
+        response = client.post(f"{base_url}/connections/{connection_id}/sync?refresh_accounts=true", headers=owner_headers)
         assert response.status_code == 201, response.text
+        plaid.return_value.get_accounts.assert_called_once_with("access-test")
         plaid.return_value.sync_transactions.assert_called_once_with("access-test", "original-cursor")
+        plaid.return_value.exchange_public_token.assert_not_called()
     with db_session() as session:
         connection = session.get(BankConnection, connection_id)
         assert session.query(BankConnection).count() == 1
@@ -133,11 +140,17 @@ with TestClient(app=app) as client:
         assert connection.encrypted_access_token == encrypted_access_token
         assert connection.provider_item_id == "item-test"
         assert session.get(BankTransaction, transaction_id).ignored_at is not None
+        assert session.get(BankTransaction, transaction_id).bank_account_id == account_id
+        assert session.query(BankAccount).count() == 1
+        assert session.get(BankAccount, account_id).provider_account_id == "refreshed-account"
+        assert session.get(BankAccount, account_id).name == "Updated Checking"
+        assert session.query(BankTransaction).filter_by(provider_transaction_id="new-transaction").one().bank_account_id == account_id
 
     # Other Plaid errors retain 502 and do not request reauthentication.
     with patch("app.banking.service.PlaidClient") as plaid:
+        plaid.return_value.get_accounts.return_value = [{**account_details, "account_id": "failed-refresh-account"}]
         plaid.return_value.sync_transactions.side_effect = PlaidApiError("Bank unavailable", "INSTITUTION_DOWN", status_code=400)
-        response = client.post(f"{base_url}/connections/{connection_id}/sync", headers=owner_headers)
+        response = client.post(f"{base_url}/connections/{connection_id}/sync?refresh_accounts=true", headers=owner_headers)
         assert response.status_code == 502, response.text
         assert response.json()["extra"]["error_code"] == "INSTITUTION_DOWN", response.text
     with db_session() as session:
@@ -146,6 +159,8 @@ with TestClient(app=app) as client:
         assert connection.error_message == "Bank unavailable"
         assert connection.sync_cursor == "recovered-cursor"
         assert connection.last_synced_at is not None
+        assert session.query(BankAccount).count() == 1
+        assert session.get(BankAccount, account_id).provider_account_id == "refreshed-account"
 """
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(

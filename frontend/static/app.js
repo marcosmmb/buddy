@@ -1170,7 +1170,7 @@ function renderBankImport() {
                         <td>${connection.status === "reauth_required" ? "Reconnection required" : escapeHtml(connection.status)}${connection.error_message ? `<div class="tiny">${escapeHtml(connection.error_message)}</div>` : ""}</td>
                         <td>${connection.last_synced_at ? escapeHtml(connection.last_synced_at.slice(0, 19).replace("T", " ")) : "Never"}</td>
                         <td>
-                          ${connection.status === "reauth_required" ? `<button class="button small primary" data-reconnect-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>Reconnect</button>` : ""}
+                          ${connection.provider === "plaid" ? `<button class="button small ${connection.status === "reauth_required" ? "primary" : ""}" data-reconnect-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>Reconnect</button>` : ""}
                           <button class="button small" data-sync-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>
                             ${state.syncingBankConnectionId === connection.id ? `<span class="spinner" aria-hidden="true"></span>Syncing…` : "Sync"}
                           </button>
@@ -2276,7 +2276,7 @@ async function openPlaidLink(twoFactorCode, connectionId = null) {
       token: linkToken,
       onSuccess: async (publicToken, metadata) => {
         if (connectionId) {
-          await syncBankConnection(connectionId, tracker.id);
+          await syncBankConnection(connectionId, tracker.id, true);
           return;
         }
         await mutate(() =>
@@ -2304,9 +2304,10 @@ async function openPlaidLink(twoFactorCode, connectionId = null) {
   }
 }
 
-async function syncBankConnection(connectionId, trackerId = currentTracker().id) {
+async function syncBankConnection(connectionId, trackerId = currentTracker().id, refreshAccounts = false) {
   syncBankLookbackDaysFromInput();
   const params = new URLSearchParams({ days: String(state.bankLookbackDays) });
+  if (refreshAccounts) params.set("refresh_accounts", "true");
   state.syncingBankConnectionId = connectionId;
   state.error = "";
   renderApp();

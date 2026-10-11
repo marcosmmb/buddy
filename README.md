@@ -137,6 +137,8 @@ Buddy does not automatically match categories from Plaid. Plaid category data is
 
 If a connection shows **Reconnection required**, click **Reconnect**, enter a fresh Buddy 2FA code, and complete the bank login or consent prompts in Plaid Link. Buddy then retries the sync using the existing connection, preserving its accounts, review decisions, imported expenses, and sync cursor.
 
+**Reconnect** is available on every Plaid connection and refreshes that same connection. It refreshes account details before syncing and keeps the local account ID when a changed Plaid account ID can be matched by a persistent identifier or unique account details. Ambiguous accounts are kept separate. Use **Connect bank** to add a new connection.
+
 To remove a bank connection from Buddy, click **Remove** beside it and confirm. This deletes its synced accounts and transactions, including ignored transactions. Expenses already imported into the tracker are kept.
 
 ## Data Storage

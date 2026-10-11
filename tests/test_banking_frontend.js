@@ -58,7 +58,7 @@ test("Update Link retries the existing connection without exchanging a new token
   assert.deepEqual(ui.calls[0].body, { two_factor_code: "123456" });
   assert.equal(ui.linkOptions().token, "link-test");
   await ui.linkOptions().onSuccess("unused-public-token", {});
-  assert.equal(ui.calls[1].url, "/api/trackers/1/bank/connections/3/sync?days=8");
+  assert.equal(ui.calls[1].url, "/api/trackers/1/bank/connections/3/sync?days=8&refresh_accounts=true");
   assert.equal(ui.calls.length, 2);
   assert.equal(ui.run("state.syncingBankConnectionId"), null);
 });
@@ -72,6 +72,19 @@ test("New bank linking still exchanges its public token and 2FA challenge", asyn
   assert.deepEqual(ui.calls[1].body, {
     public_token: "public-new", bank_link_token: "challenge-test", institution_name: "Test Bank",
   });
+});
+
+test("Every existing Plaid connection offers Reconnect even without a login-required error", () => {
+  const ui = bankUi();
+  ui.run(`state.bankConnections = [
+    { id: 3, institution_name: "Test Bank", provider: "plaid", status: "active", accounts: [] },
+    { id: 4, institution_name: "Other Bank", provider: "plaid", status: "error", accounts: [] },
+    { id: 5, institution_name: "Demo", provider: "demo", status: "active", accounts: [] }
+  ]`);
+  const html = ui.run("renderBankImport()");
+  assert.match(html, /data-reconnect-bank="3"/);
+  assert.match(html, /data-reconnect-bank="4"/);
+  assert.doesNotMatch(html, /data-reconnect-bank="5"/);
 });
 
 test("Failed sync refreshes the persisted reconnection status and keeps its message", async () => {

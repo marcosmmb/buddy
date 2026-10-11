@@ -18,9 +18,10 @@ from app.banking.service import (
     restore_bank_transaction,
     load_bank_connection_for_user,
     sync_bank_connection,
+    upsert_accounts,
 )
-from app.db import ensure_bank_transaction_columns
-from app.models import Base, BankTransaction, Category, Expense, Tracker, TrackerMember, User, utcnow
+from app.db import ensure_bank_account_columns, ensure_bank_transaction_columns
+from app.models import Base, BankAccount, BankConnection, BankTransaction, Category, Expense, Tracker, TrackerMember, User, utcnow
 from app.schemas import BankTransactionImportItem
 
 
@@ -83,6 +84,112 @@ class BankingServiceTests(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
+
+    def test_reconnection_refresh_reuses_account_and_preserves_transaction_history(self) -> None:
+        with self.Session() as session:
+            user = User(id=1, email="owner@example.test", name="Owner", password_hash="x")
+            tracker = Tracker(id=1, name="Home", created_by_id=1)
+            category = Category(id=1, tracker_id=1, name="Groceries", color="#f1b84b")
+            session.add_all([user, tracker, category, TrackerMember(tracker_id=1, user_id=1, role="owner", user=user, tracker=tracker)])
+            session.flush()
+            plaid = FakePlaidClient()
+            connection = create_bank_connection(session, tracker, user, "public-test", "Mybank", plaid)
+            account = session.query(BankAccount).one()
+            original_account_id, original_connection_id = account.id, connection.id
+            account.enabled = False
+            outgoing = session.query(BankTransaction).filter_by(provider_transaction_id="txn-outgoing").one()
+            import_bank_transactions(session, tracker, user, [BankTransactionImportItem(transaction_id=outgoing.id, category_id=1)])
+            expense_id = outgoing.expense_id
+            ignored = BankTransaction(bank_account_id=account.id, provider_transaction_id="txn-ignored", date=utcnow().date(), amount=10, ignored_at=utcnow())
+            session.add(ignored)
+            session.commit()
+            ignored_at = ignored.ignored_at
+            encrypted_token = connection.encrypted_access_token
+            new_account = plaid.get_accounts("access-test")[0]
+            new_account["account_id"] = "rotated-account-id"
+            new_account["name"] = "Updated Checking Name"
+            old_transaction = plaid.sync_transactions("access-test")["added"][0]
+            new_transaction = {**old_transaction, "transaction_id": "txn-new", "account_id": "rotated-account-id"}
+            with patch.object(plaid, "get_accounts", return_value=[new_account]) as get_accounts, patch.object(plaid, "sync_transactions", return_value={
+                "added": [new_transaction], "modified": [old_transaction], "next_cursor": "refreshed-cursor", "has_more": False,
+            }) as sync:
+                sync_bank_connection(session, connection, plaid, refresh_accounts=True)
+                get_accounts.assert_called_once_with("access-test")
+                sync.assert_called_once_with("access-test", "cursor-1")
+            session.commit()
+            session.expire_all()
+            self.assertEqual(session.query(BankConnection).count(), 1)
+            self.assertEqual(session.query(BankAccount).count(), 1)
+            self.assertEqual(connection.id, original_connection_id)
+            self.assertEqual(connection.encrypted_access_token, encrypted_token)
+            self.assertEqual(connection.provider_item_id, "item-test")
+            self.assertEqual(account.id, original_account_id)
+            self.assertEqual(account.provider_account_id, "rotated-account-id")
+            self.assertEqual(account.name, "Updated Checking Name")
+            self.assertFalse(account.enabled)
+            self.assertEqual(outgoing.bank_account_id, original_account_id)
+            self.assertEqual(outgoing.status, "imported")
+            self.assertEqual(outgoing.expense_id, expense_id)
+            self.assertEqual(ignored.ignored_at, ignored_at)
+            self.assertEqual(ignored.bank_account_id, original_account_id)
+            self.assertEqual(session.query(BankTransaction).filter_by(provider_transaction_id="txn-new").one().bank_account_id, original_account_id)
+            self.assertEqual(session.query(Expense).count(), 1)
+
+    def test_account_refresh_uses_persistent_identity_when_other_details_change(self) -> None:
+        with self.Session() as session:
+            user = User(id=1, email="owner@example.test", name="Owner", password_hash="x")
+            tracker = Tracker(id=1, name="Home", created_by_id=1)
+            session.add_all([user, tracker])
+            session.flush()
+            connection = BankConnection(tracker_id=1, user_id=1, provider_item_id="item-test", encrypted_access_token="unused")
+            session.add(connection)
+            session.flush()
+            upsert_accounts(session, connection, [{"account_id": "old-id", "persistent_account_id": "stable-id", "name": "Old name", "mask": "1234"}])
+            account_id = session.query(BankAccount).one().id
+            upsert_accounts(session, connection, [{"account_id": "new-id", "persistent_account_id": "stable-id", "name": "New name", "mask": "5678"}], reconcile_existing=True)
+            account = session.query(BankAccount).one()
+            self.assertEqual(account.id, account_id)
+            self.assertEqual(account.provider_account_id, "new-id")
+            self.assertEqual(account.mask, "5678")
+
+    def test_account_refresh_keeps_ambiguous_or_different_accounts_separate(self) -> None:
+        details = {"mask": "1234", "type": "depository", "subtype": "checking", "balances": {"iso_currency_code": "CAD"}}
+        scenarios = [
+            ([{"account_id": "old-1"}, {"account_id": "old-2"}], [{"account_id": "new-1"}], 3),
+            ([{"account_id": "old-1"}], [{"account_id": "new-1"}, {"account_id": "new-2"}], 3),
+            ([{"account_id": "old-1"}], [{"account_id": "old-1"}, {"account_id": "new-1"}], 2),
+            ([{"account_id": "old-1", "persistent_account_id": "stable-1"}], [{"account_id": "new-1", "persistent_account_id": "stable-2"}], 2),
+            ([{"account_id": "old-1", "persistent_account_id": "stable-1"}], [{"account_id": "new-1", "persistent_account_id": "stable-1"}, {"account_id": "new-2", "persistent_account_id": "stable-1"}], 3),
+            ([{"account_id": "old-1", "mask": ""}], [{"account_id": "new-1", "mask": ""}], 2),
+        ]
+        for old_rows, new_rows, expected_count in scenarios:
+            with self.subTest(old_rows=old_rows, new_rows=new_rows), self.Session() as session:
+                user = User(id=1, email="owner@example.test", name="Owner", password_hash="x")
+                tracker = Tracker(id=1, name="Home", created_by_id=1)
+                session.add_all([user, tracker])
+                session.flush()
+                connection = BankConnection(tracker_id=1, user_id=1, provider_item_id="item-test", encrypted_access_token="unused")
+                session.add(connection)
+                session.flush()
+                upsert_accounts(session, connection, [{**details, **row} for row in old_rows])
+                upsert_accounts(session, connection, [{**details, **row} for row in new_rows], reconcile_existing=True)
+                self.assertEqual(session.query(BankAccount).count(), expected_count)
+                self.assertEqual(session.query(BankAccount).filter_by(provider_account_id="old-1").count(), 1)
+
+    def test_account_refresh_never_matches_accounts_from_another_connection(self) -> None:
+        with self.Session() as session:
+            user = User(id=1, email="owner@example.test", name="Owner", password_hash="x")
+            tracker = Tracker(id=1, name="Home", created_by_id=1)
+            session.add_all([user, tracker])
+            session.flush()
+            first = BankConnection(tracker_id=1, user_id=1, provider_item_id="first", encrypted_access_token="unused")
+            second = BankConnection(tracker_id=1, user_id=1, provider_item_id="second", encrypted_access_token="unused")
+            session.add_all([first, second])
+            session.flush()
+            upsert_accounts(session, first, [{"account_id": "old-id", "persistent_account_id": "stable-id"}])
+            upsert_accounts(session, second, [{"account_id": "new-id", "persistent_account_id": "stable-id"}], reconcile_existing=True)
+            self.assertEqual(session.query(BankAccount).count(), 2)
+            self.assertEqual(session.query(BankAccount).filter_by(provider_account_id="old-id").one().bank_connection_id, first.id)
 
     def test_plaid_sync_stages_transactions_for_review(self) -> None:
         with self.Session() as session:
@@ -332,6 +439,18 @@ class BankingServiceTests(unittest.TestCase):
 
 
 class BankingMigrationTests(unittest.TestCase):
+    def test_adds_persistent_account_identity_without_changing_existing_ids(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        self.addCleanup(engine.dispose)
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE bank_accounts (id INTEGER PRIMARY KEY, provider_account_id VARCHAR(160) NOT NULL)"))
+            connection.execute(text("INSERT INTO bank_accounts (id, provider_account_id) VALUES (7, 'old-id')"))
+        with patch("app.db.engine", engine):
+            ensure_bank_account_columns()
+            ensure_bank_account_columns()
+        with engine.connect() as connection:
+            self.assertEqual(connection.execute(text("SELECT id, provider_account_id, persistent_account_id FROM bank_accounts")).all(), [(7, "old-id", None)])
+
     def test_adds_nullable_ignore_timestamp_without_hiding_legacy_transactions(self) -> None:
         engine = create_engine("sqlite:///:memory:")
         self.addCleanup(engine.dispose)

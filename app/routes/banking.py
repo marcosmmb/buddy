@@ -120,13 +120,13 @@ class BankingController(Controller):
             return {"link_token": link_token}
 
     @post("/connections/{connection_id:int}/sync", sync_to_thread=True)
-    def sync_connection(self, request: Request, tracker_id: int, connection_id: int, days: int = 8) -> dict[str, Any]:
+    def sync_connection(self, request: Request, tracker_id: int, connection_id: int, days: int = 8, refresh_accounts: bool = False) -> dict[str, Any]:
         user = require_user(request)
         sync_error: HTTPException | None = None
         with db_session() as session:
             connection = load_bank_connection_for_user(session, tracker_id, connection_id, user)
             try:
-                counts = sync_bank_connection(session, connection)
+                counts = sync_bank_connection(session, connection, refresh_accounts=refresh_accounts)
             except HTTPException as exc:
                 if not isinstance(exc.extra, dict) or "error_code" not in exc.extra:
                     raise

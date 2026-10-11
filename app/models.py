@@ -185,6 +185,7 @@ class BankAccount(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     bank_connection_id: Mapped[int] = mapped_column(ForeignKey("bank_connections.id", ondelete="CASCADE"), index=True)
     provider_account_id: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    persistent_account_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     name: Mapped[str] = mapped_column(String(160))
     mask: Mapped[str] = mapped_column(String(20), default="")
     type: Mapped[str] = mapped_column(String(40), default="")
