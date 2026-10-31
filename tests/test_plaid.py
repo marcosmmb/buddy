@@ -90,6 +90,18 @@ class PlaidClientTests(unittest.TestCase):
         self.assertNotIn("products", requests[0])
         self.assertNotIn("transactions", requests[0])
 
+    def test_remove_item_posts_token_and_preserves_request_id(self) -> None:
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(str(request.url), "https://production.plaid.com/item/remove")
+            self.assertEqual(json.loads(request.content), {
+                "client_id": "test-client", "secret": "test-secret", "access_token": "access-test",
+            })
+            return httpx.Response(200, json={"request_id": "request-remove"})
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            self.assertEqual(PlaidClient(http_client).remove_item("access-test"), {"request_id": "request-remove"})
+
 
 if __name__ == "__main__":
     unittest.main()

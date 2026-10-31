@@ -105,6 +105,9 @@ class PlaidClient:
     def get_accounts(self, access_token: str) -> list[dict[str, Any]]:
         return self.request("/accounts/get", {"access_token": access_token}).get("accounts", [])
 
+    def remove_item(self, access_token: str) -> dict[str, Any]:
+        return self.request("/item/remove", {"access_token": access_token})
+
     def sync_transactions(self, access_token: str, cursor: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"access_token": access_token, "count": 500}
         if cursor:

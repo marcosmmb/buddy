@@ -2360,7 +2360,8 @@ async function removeBankConnection(connectionId) {
   const tracker = currentTracker();
   const connection = state.bankConnections.find((row) => row.id === connectionId);
   if (!tracker || !connection) return;
-  if (!window.confirm(`Remove the bank connection to "${connection.institution_name}" from Buddy?\n\nIts synced accounts and transactions, including ignored transactions, will be deleted. Expenses already imported will be kept. This cannot be undone.`)) return;
+  const plaidNotice = connection.provider === "plaid" ? "This also disconnects it from Plaid and stops future bank updates. " : "";
+  if (!window.confirm(`Remove the bank connection to "${connection.institution_name}" from Buddy?\n\n${plaidNotice}Its synced accounts and transactions, including ignored transactions, will be deleted. Expenses already imported will be kept. This cannot be undone.`)) return;
   state.removingBankConnectionId = connectionId;
   state.error = "";
   renderApp();

@@ -139,7 +139,7 @@ If a connection shows **Reconnection required**, click **Reconnect**, enter a fr
 
 **Reconnect** is available on every Plaid connection and refreshes that same connection. It refreshes account details before syncing and keeps the local account ID when a changed Plaid account ID can be matched by a persistent identifier or unique account details. Ambiguous accounts are kept separate. Use **Connect bank** to add a new connection.
 
-To remove a bank connection from Buddy, click **Remove** beside it and confirm. This deletes its synced accounts and transactions, including ignored transactions. Expenses already imported into the tracker are kept.
+To remove a bank connection from Buddy, click **Remove** beside it and confirm. For Plaid connections, Buddy first removes the Item from Plaid to stop future bank updates and its subscription billing, then deletes its synced accounts and transactions, including ignored transactions. Expenses already imported into the tracker are kept. If Plaid removal cannot be confirmed, Buddy keeps the connection so you can retry; an Item that Plaid reports as already missing can still be removed locally. Demo connections are deleted locally without contacting Plaid.
 
 ## Data Storage
 

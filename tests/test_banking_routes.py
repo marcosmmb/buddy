@@ -184,8 +184,12 @@ with TestClient(app=app) as client:
     def test_ignore_route_authentication_ownership_and_persistence(self) -> None:
         script = """
 from decimal import Decimal
+from unittest.mock import patch
 
+import httpx
 from litestar.testing import TestClient
+from app.banking.crypto import encrypt_token
+from app.banking.plaid import PlaidApiError
 from app.db import db_session
 from app.main import app
 from app.models import BankAccount, BankConnection, BankTransaction, Category, Expense, SessionToken, Tracker, TrackerMember, User, utcnow
@@ -210,7 +214,7 @@ with TestClient(app=app) as client:
             SessionToken(token="admin-token", user_id=admin.id),
         ])
         category = Category(tracker_id=tracker.id, name="Groceries", color="#f1b84b")
-        connection = BankConnection(tracker_id=tracker.id, user_id=owner.id, provider_item_id="item-test", institution_name="Test Bank", encrypted_access_token="unused")
+        connection = BankConnection(tracker_id=tracker.id, user_id=owner.id, provider_item_id="item-test", institution_name="Test Bank", encrypted_access_token=encrypt_token("access-test"))
         session.add_all([category, connection])
         session.flush()
         account = BankAccount(bank_connection_id=connection.id, provider_account_id="account-test", name="Checking")
@@ -289,19 +293,60 @@ with TestClient(app=app) as client:
         account_id = transaction.bank_account_id
         connection_id = transaction.account.bank_connection_id
         ignored = BankTransaction(bank_account_id=account_id, provider_transaction_id="txn-ignored", date=utcnow().date(), amount=10, ignored_at=utcnow())
-        other_connection = BankConnection(tracker_id=tracker_id, user_id=transaction.account.connection.user_id, provider_item_id="item-other", encrypted_access_token="unused")
+        other_connection = BankConnection(tracker_id=tracker_id, user_id=transaction.account.connection.user_id, provider_item_id="item-other", encrypted_access_token=encrypt_token("access-other"))
         session.add_all([ignored, other_connection])
         session.flush()
         ignored_id, other_connection_id = ignored.id, other_connection.id
         expense_id = session.query(Expense).one().id
     remove_url = f"/api/trackers/{tracker_id}/bank/connections/{connection_id}"
-    assert client.delete(remove_url).status_code == 401
-    for token in ["member-token", "admin-token"]:
-        response = client.delete(remove_url, headers={"authorization": "Bearer " + token})
+    with patch("app.routes.banking.PlaidClient") as plaid:
+        assert client.delete(remove_url).status_code == 401
+        for token in ["member-token", "admin-token"]:
+            response = client.delete(remove_url, headers={"authorization": "Bearer " + token})
+            assert response.status_code == 404, response.text
+        response = client.delete(f"/api/trackers/{other_tracker_id}/bank/connections/{connection_id}", headers=owner_headers)
         assert response.status_code == 404, response.text
-    response = client.delete(f"/api/trackers/{other_tracker_id}/bank/connections/{connection_id}", headers=owner_headers)
-    assert response.status_code == 404, response.text
-    response = client.delete(remove_url, headers=owner_headers)
+        plaid.assert_not_called()
+
+    # Failed or ambiguous remote removal must preserve every local row for retry.
+    for error in [
+        PlaidApiError("private access-test", "INSTITUTION_DOWN"),
+        PlaidApiError("private access-test", "ITEM_LOGIN_REQUIRED"),
+        PlaidApiError("private access-test", "INVALID_ACCESS_TOKEN"),
+        PlaidApiError("private access-test", "INVALID_API_KEYS"),
+        PlaidApiError("Plaid is not configured"),
+        httpx.ReadTimeout("private access-test"),
+        httpx.ConnectError("private access-test"),
+    ]:
+        with patch("app.routes.banking.PlaidClient") as plaid:
+            plaid.return_value.remove_item.side_effect = error
+            response = client.delete(remove_url, headers=owner_headers)
+            plaid.return_value.remove_item.assert_called_once_with("access-test")
+        assert response.status_code == 502, response.text
+        assert "retry" in response.json()["detail"], response.text
+        assert "access-test" not in response.text
+        with db_session() as session:
+            connection = session.get(BankConnection, connection_id)
+            assert connection is not None
+            assert connection.encrypted_access_token is not None
+            assert session.get(BankAccount, account_id) is not None
+            assert session.get(BankTransaction, transaction_id).expense_id == expense_id
+            assert session.get(BankTransaction, ignored_id).ignored_at is not None
+            assert session.get(Expense, expense_id) is not None
+
+    def remove_remote(access_token):
+        assert access_token == "access-test"
+        # Plaid must be called before the local connection or its accounts are deleted.
+        with db_session() as session:
+            assert session.get(BankConnection, connection_id) is not None
+            assert session.get(BankAccount, account_id) is not None
+            assert session.get(BankTransaction, ignored_id) is not None
+        return {"request_id": "request-remove"}
+
+    with patch("app.routes.banking.PlaidClient") as plaid:
+        plaid.return_value.remove_item.side_effect = remove_remote
+        response = client.delete(remove_url, headers=owner_headers)
+        plaid.return_value.remove_item.assert_called_once_with("access-test")
     assert response.status_code == 200, response.text
     assert response.json() == {"status": "ok"}, response.text
     with db_session() as session:
@@ -316,7 +361,29 @@ with TestClient(app=app) as client:
     assert [row["id"] for row in response.json()] == [other_connection_id], response.text
     assert client.get(base_url, headers=owner_headers).json() == []
     assert client.get(ignored_url, headers=owner_headers).json() == []
-    assert client.delete(remove_url, headers=owner_headers).status_code == 404
+    with patch("app.routes.banking.PlaidClient") as plaid:
+        assert client.delete(remove_url, headers=owner_headers).status_code == 404
+        plaid.assert_not_called()
+
+    # Retrying local cleanup is safe if Plaid confirms the Item no longer exists.
+    with patch("app.routes.banking.PlaidClient") as plaid:
+        plaid.return_value.remove_item.side_effect = PlaidApiError("Already removed", "ITEM_NOT_FOUND")
+        response = client.delete(f"/api/trackers/{tracker_id}/bank/connections/{other_connection_id}", headers=owner_headers)
+        assert response.status_code == 200, response.text
+        plaid.return_value.remove_item.assert_called_once_with("access-other")
+    with db_session() as session:
+        assert session.get(BankConnection, other_connection_id) is None
+        assert session.get(Expense, expense_id) is not None
+        demo = BankConnection(tracker_id=tracker_id, user_id=owner.id, provider="demo", provider_item_id="demo-test", encrypted_access_token="unused")
+        session.add(demo)
+        session.flush()
+        demo_id = demo.id
+    with patch("app.routes.banking.PlaidClient") as plaid:
+        response = client.delete(f"/api/trackers/{tracker_id}/bank/connections/{demo_id}", headers=owner_headers)
+        assert response.status_code == 200, response.text
+        plaid.assert_not_called()
+    with db_session() as session:
+        assert session.get(BankConnection, demo_id) is None
 """
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(

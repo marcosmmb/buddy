@@ -151,15 +151,19 @@ test("Leaving update Link preserves the connection and does not start a sync", a
 
 test("Cancelling removal sends no request and keeps the bank connection", async () => {
   const ui = bankUi();
-  ui.run('state.bankConnections = [{ id: 3, institution_name: "Test Bank" }]');
+  ui.run('state.bankConnections = [{ id: 3, institution_name: "Test Bank", provider: "plaid" }]');
   let confirmation;
   ui.context.window.confirm = (message) => { confirmation = message; return false; };
   await ui.run("removeBankConnection(3)");
   assert.match(confirmation, /Test Bank/);
+  assert.match(confirmation, /disconnects it from Plaid/);
   assert.match(confirmation, /Expenses already imported will be kept/);
   assert.equal(ui.calls.length, 0);
   assert.equal(ui.run("state.bankConnections.length"), 1);
   assert.equal(ui.run("state.removingBankConnectionId"), null);
+  ui.run('state.bankConnections[0].provider = "demo"');
+  await ui.run("removeBankConnection(3)");
+  assert.doesNotMatch(confirmation, /Plaid/);
 });
 
 test("Confirmed removal deletes only the selected bank connection and refreshes", async () => {

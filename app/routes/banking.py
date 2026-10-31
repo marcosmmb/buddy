@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
+import httpx
 from litestar import Controller, Request, delete, get, post
 from litestar.exceptions import HTTPException
 from litestar.params import Body
@@ -153,6 +154,20 @@ class BankingController(Controller):
         user = require_user(request)
         with db_session() as session:
             connection = load_bank_connection_for_user(session, tracker_id, connection_id, user)
+            if connection.provider == "plaid":
+                failure_detail = "Unable to confirm bank disconnection with Plaid. The connection has been kept so you can retry."
+                try:
+                    with httpx.Client(timeout=30) as http_client:
+                        result = PlaidClient(http_client).remove_item(decrypt_token(connection.encrypted_access_token))
+                    logger.info("Plaid item removed: connection_id=%s request_id=%s", connection.id, result.get("request_id", ""))
+                except PlaidApiError as exc:
+                    # Allow retry after remote removal succeeded but local cleanup failed.
+                    # Invalid credentials/tokens do not prove the Item was removed.
+                    if exc.error_code != "ITEM_NOT_FOUND":
+                        raise HTTPException(status_code=502, detail=failure_detail) from exc
+                except httpx.RequestError as exc:
+                    logger.warning("Plaid item removal request failed: connection_id=%s error_type=%s", connection.id, type(exc).__name__)
+                    raise HTTPException(status_code=502, detail=failure_detail) from exc
             session.delete(connection)
             return {"status": "ok"}
 
