@@ -72,7 +72,7 @@ test("Bank import includes selected transactions hidden by search", async () => 
   assert.match(view.run('state.notices[0].message'), /Imported 2/);
 });
 
-test("Mutation prevents duplicate requests and retains drafts on failure", async () => {
+test("Mutation prevents duplicate requests and reports failures", async () => {
   const view = ui();
   let release;
   let calls = 0;
@@ -81,10 +81,8 @@ test("Mutation prevents duplicate requests and retains drafts on failure", async
   assert.equal(await view.run('mutate(operation)'), false);
   assert.equal(calls, 1);
   release({}); await pending;
-  view.run('formDrafts.set("draft", [{ name: "description", value: "Dinner" }])');
   assert.equal(await view.run('mutate(async () => { throw new Error("Offline"); })'), false);
-  assert.equal(view.run('formDrafts.get("draft")[0].value'), "Dinner");
-  assert.match(view.run('state.error'), /Offline/);
+  assert.equal(view.run('state.error'), "Offline");
   assert.equal(view.run('state.mutating'), false);
 });
 
@@ -98,39 +96,74 @@ test("Delete offers Undo against the original tracker after navigation", async (
   assert.equal(calls[1], "/api/trackers/1/expenses/undo/undo-token");
 });
 
-test("Inline autosave serializes edits and does not overwrite a newer draft", async () => {
+test("Inline autosave serializes edits and does not overwrite a newer change", async () => {
   const view = ui();
   const requests = [];
   const resolvers = [];
   view.context.api = (url, options) => { requests.push(JSON.parse(options.body)); return new Promise((resolve) => resolvers.push(resolve)); };
-  view.run('state.expenses = [{id: 9, description: "latest"}]; expenseEdits.set("1:9", {payload: {description: "first"}, revision: 1, saving: false})');
+  view.run('state.expenses = [{id: 9, description: "latest"}]; expenseSaves.set("1:9", {payload: {description: "first"}, revision: 1, saving: false})');
   const saving = view.run('persistExpenseEdit(1, 9)');
-  view.run('expenseEdits.get("1:9").payload = {description: "latest"}; expenseEdits.get("1:9").revision = 2');
+  view.run('expenseSaves.get("1:9").payload = {description: "latest"}; expenseSaves.get("1:9").revision = 2');
   resolvers[0]({id: 9, description: "first"});
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(requests.length, 2);
   assert.equal(view.run('state.expenses[0].description'), "latest");
   resolvers[1]({id: 9, description: "latest"});
   await saving;
-  assert.equal(view.run('expenseEdits.size'), 0);
+  assert.equal(view.run('expenseSaves.size'), 0);
 });
 
-test("Failed inline save keeps its payload for Retry", async () => {
+test("Failed inline save restores the saved expense and removes the pending edit", async () => {
   const view = ui();
   view.context.api = async () => { throw new Error("Offline"); };
-  view.run('expenseEdits.set("1:9", {payload: {description: "Keep me"}, revision: 1, saving: false})');
+  view.run(`state.expenses = [{id: 9, description: "Changed", amount: 42}];
+    expenseSaves.set("1:9", {payload: {description: "Changed", amount: 42}, saved: {id: 9, description: "Saved", amount: 10}, revision: 1, saving: false});`);
   await view.run('persistExpenseEdit(1, 9)');
-  assert.equal(view.run('expenseEdits.get("1:9").failed'), true);
-  assert.equal(view.run('expenseEdits.get("1:9").payload.description'), "Keep me");
+  assert.equal(view.run('expenseSaves.size'), 0);
+  assert.equal(view.run('state.expenses[0].description'), "Saved");
+  assert.equal(view.run('state.expenses[0].amount'), 10);
+  assert.match(view.run('state.error'), /Offline.*last saved value has been restored/);
 });
 
-test("Draft snapshots preserve checkboxes but exclude secrets", () => {
+test("A failed newer autosave restores the most recently successful save", async () => {
   const view = ui();
-  view.context.form = { elements: [{name: "name", type: "text", value: "Alex"}, {name: "password", type: "password", value: "secret"}, {name: "code", type: "text", value: "123456"}, {name: "is_shared", type: "checkbox", checked: false}], dataset: {draftKey: "test"} };
-  view.all.set("form[data-draft-key][data-dirty]", [view.context.form]);
-  view.run('captureDrafts()');
-  assert.equal(view.run('formDrafts.get("test").length'), 2);
-  assert.equal(view.run('formDrafts.get("test")[1].checked'), false);
+  let release;
+  let calls = 0;
+  view.context.api = () => ++calls === 1
+    ? new Promise((resolve) => { release = resolve; })
+    : Promise.reject(new Error("Offline"));
+  view.run(`state.expenses = [{id: 9, description: "First"}];
+    expenseSaves.set("1:9", {payload: {description: "First"}, saved: {id: 9, description: "Original"}, revision: 1, saving: false});`);
+  const saving = view.run('persistExpenseEdit(1, 9)');
+  view.run('expenseSaves.get("1:9").payload = {description: "Second"}; expenseSaves.get("1:9").revision = 2; state.expenses[0].description = "Second"');
+  release({id: 9, description: "First"});
+  await saving;
+  assert.equal(calls, 2);
+  assert.equal(view.run('state.expenses[0].description'), "First");
+  assert.equal(view.run('expenseSaves.size'), 0);
+});
+
+test("Leaving bank review clears unimported values without a confirmation", async () => {
+  const view = ui();
+  view.context.window.confirm = () => { throw new Error("Unexpected confirmation"); };
+  view.run(`state.tab = "bank"; state.bankTransactions = [{id: 1, description: "Saved", _reviewDescription: "Edited", _reviewSelected: true, _reviewCategoryId: 1}];
+    window.location.search = "?tracker=1&tab=overview"; renderApp = realRenderApp;`);
+  await view.run('handleNavigationChange()');
+  assert.equal(view.run('state.tab'), "overview");
+  assert.equal(view.run('state.bankTransactions[0].description'), "Saved");
+  assert.equal(view.run('state.bankTransactions[0]._reviewDescription'), undefined);
+  assert.equal(view.run('state.bankTransactions[0]._reviewSelected'), undefined);
+  view.run('window.location.search = "?tracker=1&tab=bank"');
+  await view.run('handleNavigationChange()');
+  assert.equal(view.run('state.bankTransactions[0]._reviewCategoryId'), undefined);
+});
+
+test("Navigation still waits for an active submission", () => {
+  const view = ui();
+  view.run('activeSubmission = {form: {id: "expense-form"}}');
+  assert.equal(view.run('allowNavigation()'), false);
+  view.run('activeSubmission = null');
+  assert.equal(view.run('allowNavigation()'), true);
 });
 
 test("Bank health distinguishes a failed bank update from a successful app sync", () => {

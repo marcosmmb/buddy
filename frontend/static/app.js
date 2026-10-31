@@ -64,10 +64,8 @@ const state = {
 
 const app = document.querySelector("#app");
 const autosaveTimers = new Map();
-const formDrafts = new Map();
-const expenseEdits = new Map();
+const expenseSaves = new Map();
 const bankHealth = new Map();
-const bankReviewDrafts = new Map();
 let activeSubmission = null;
 let noticeSequence = 0;
 let refreshSequence = 0;
@@ -84,71 +82,9 @@ function renderNotices() {
     </div>`).join("")}</div>`;
 }
 
-function draftFields(form) {
-  return [...form.elements].filter((field) => field.name && !["submit", "button", "hidden", "password"].includes(field.type) && !["code", "two_factor_code"].includes(field.name));
-}
-
-function captureDrafts() {
-  for (const form of document.querySelectorAll?.("form[data-draft-key][data-dirty]") || []) {
-    formDrafts.set(form.dataset.draftKey, draftFields(form).map((field) => ({ name: field.name, type: field.type, value: field.value, checked: field.checked, files: field.type === "file" ? field.files : null })));
-  }
-}
-
-function clearActiveDraft() {
-  if (!activeSubmission) return;
-  formDrafts.delete(activeSubmission.key);
-  activeSubmission.form.removeAttribute("data-dirty");
-  for (const form of document.querySelectorAll?.("form[data-draft-key]") || []) {
-    if (form.dataset.draftKey === activeSubmission.key) form.removeAttribute("data-dirty");
-  }
-}
-
-function showDraftNote(form, key) {
-  if (form.querySelector("[data-draft-note]")) return;
-  form.insertAdjacentHTML("afterbegin", '<div class="draft-note" data-draft-note><span>Unsaved changes</span><button class="text-button" type="button">Discard draft</button></div>');
-  form.querySelector("[data-draft-note] button").addEventListener("click", () => {
-    if (activeSubmission || state.mutating) return;
-    formDrafts.delete(key); form.removeAttribute("data-dirty");
-    if (state.user) renderApp(); else renderAuth();
-  });
-}
-
-function bindDraftForms() {
-  for (const form of document.querySelectorAll?.("form[id]") || []) {
-    if (["bank-import-form", "bank-2fa-form", "login-2fa-form"].includes(form.id)) continue;
-    const key = `${state.user?.id || "login"}:${state.trackerId || "none"}:${form.id}${form.id === "monthly-shares-form" ? `:${state.expenseMonth}` : ""}`;
-    form.dataset.draftKey = key;
-    if (activeSubmission?.key === key) {
-      form.setAttribute("aria-busy", "true");
-      form.querySelectorAll('button[type="submit"], button:not([type])').forEach((button) => { button.disabled = true; });
-    }
-    const saved = formDrafts.get(key);
-    if (saved) {
-      const fields = draftFields(form);
-      fields.forEach((field) => {
-        const value = saved.find((item) => item.name === field.name && item.type === field.type && (!["checkbox", "radio"].includes(field.type) || item.value === field.value));
-        if (!value) return;
-        if (field.type === "file") {
-          if (value.files?.length) { try { field.files = value.files; } catch (_) {} }
-        } else if (["checkbox", "radio"].includes(field.type)) field.checked = value.checked;
-        else field.value = value.value;
-      });
-      form.dataset.dirty = "true";
-      showDraftNote(form, key);
-    }
-    for (const event of ["input", "change"]) form.addEventListener(event, () => { form.dataset.dirty = "true"; captureDrafts(); showDraftNote(form, key); });
-  }
-}
-
-function hasUnsavedChanges() {
-  captureDrafts();
-  if (document.querySelectorAll) captureBankReviewState();
-  return formDrafts.size > 0 || expenseEdits.size > 0 || [...bankReviewDrafts.values()].some((draft) => draft.dirty);
-}
-
 function allowNavigation() {
   if (state.mutating || activeSubmission) { notify("Please wait for the current action to finish."); renderApp(); return false; }
-  return !hasUnsavedChanges() || window.confirm("You have unsaved changes. Leave this screen? Your drafts will stay available until you sign out or reload.");
+  return true;
 }
 
 function bindSubmit(selector, handler) {
@@ -159,9 +95,8 @@ function bindSubmit(selector, handler) {
   element?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (activeSubmission || state.mutating) return;
-    captureDrafts();
     const form = event.currentTarget;
-    activeSubmission = { form, key: form.dataset.draftKey };
+    activeSubmission = { form };
     const buttons = [...form.querySelectorAll('button[type="submit"], button:not([type])')];
     const original = buttons.map((button) => ({ button, disabled: button.disabled, html: button.innerHTML }));
     buttons.forEach((button) => { button.disabled = true; button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Working…'; });
@@ -180,7 +115,6 @@ function bindSubmit(selector, handler) {
 }
 
 function bindUxEvents() {
-  bindDraftForms();
   document.querySelectorAll?.("[data-dismiss-notice]").forEach((button) => button.addEventListener("click", () => {
     state.notices = state.notices.filter((notice) => notice.id !== Number(button.dataset.dismissNotice)); renderApp();
   }));
@@ -237,12 +171,10 @@ function bindUxEvents() {
     captureBankReviewState();
     const rows = visibleBankTransactions();
     const selected = !rows.every((row) => row._reviewSelected);
-    rows.forEach((row) => { row._reviewSelected = selected; rememberBankDraft(row); }); renderApp();
+    rows.forEach((row) => { row._reviewSelected = selected; }); renderApp();
   });
   document.querySelector("#bank-apply-bulk")?.addEventListener("click", applyBankBulkEdits);
   document.querySelectorAll?.("[data-check-bank-health]").forEach((button) => button.addEventListener("click", () => refreshBankHealth(Number(button.dataset.checkBankHealth), true)));
-  document.querySelectorAll?.("[data-discard-expense]").forEach((button) => button.addEventListener("click", () => discardExpenseEdit(Number(button.dataset.discardExpense))));
-  document.querySelectorAll?.("[data-retry-expense]").forEach((button) => button.addEventListener("click", () => retryExpenseSave(Number(button.dataset.retryExpense))));
   document.querySelectorAll?.("details[data-section]").forEach((details) => details.addEventListener("toggle", () => {
     state.openSections[`${state.trackerId}:${details.dataset.section}`] = details.open;
   }));
@@ -293,9 +225,8 @@ function applyBankBulkEdits() {
     if (category) row._reviewCategoryId = Number(category);
     if (payer) row._reviewPaidById = Number(payer);
     if (shared) row._reviewIsShared = shared === "shared";
-    rememberBankDraft(row);
   }
-  // Update visible controls before renderApp captures review drafts again.
+  // Keep visible controls in sync with the bulk selection.
   document.querySelectorAll("[data-bank-transaction]").forEach((el) => {
     const row = state.bankTransactions.find((item) => item.id === Number(el.dataset.bankTransaction));
     if (!row?._reviewSelected) return;
@@ -339,7 +270,7 @@ async function refreshBankHealth(connectionId, force = false) {
 
 async function deleteExpenses(ids) {
   if (!ids.length || state.mutating) return;
-  if (ids.some((id) => expenseEdits.has(`${state.trackerId}:${id}`))) { notify("Save or retry your edits before deleting these expenses."); renderApp(); return; }
+  if (ids.some((id) => expenseSaves.has(`${state.trackerId}:${id}`))) { notify("Please wait for these expenses to finish saving before deleting them."); renderApp(); return; }
   const trackerId = currentTracker().id;
   await mutate(async () => {
     const result = await api(`/api/trackers/${trackerId}/expenses/bulk-delete`, { method: "POST", body: JSON.stringify({ expense_ids: ids }) });
@@ -671,24 +602,21 @@ async function loadTrackerData() {
     api(`/api/trackers/${tracker.id}/bank/transactions/ignored?${bankParams}`),
   ]);
   if (currentTracker()?.id !== tracker.id || sequence !== refreshSequence) return;
-  if (document.querySelectorAll) captureBankReviewState();
-  const reviewDrafts = new Map(state.bankTransactions.map((row) => [row.id, row]));
   state.categories = categories;
-  state.expenses = expenses.map((row) => ({ ...row, ...(expenseEdits.get(`${tracker.id}:${row.id}`)?.payload || {}) }));
+  state.expenses = expenses.map((row) => ({ ...row, ...(expenseSaves.get(`${tracker.id}:${row.id}`)?.payload || {}) }));
   state.overview = overview;
   state.periodOptions = periodOptions;
   state.csvConfigs = csvConfigs;
   state.monthlyShares = monthlyShares;
   state.bankConfig = bankConfig;
   state.bankConnections = bankConnections;
-  state.bankTransactions = bankTransactions.map((row) => ({ ...bankReviewDrafts.get(`${tracker.id}:${row.id}`)?.values, ...reviewDrafts.get(row.id), ...row }));
+  state.bankTransactions = bankTransactions;
   state.bankSyncResult = null;
   state.ignoredBankTransactions = ignoredBankTransactions;
   state.ignoredBankExpanded = false;
 }
 
 function renderAuth() {
-  captureDrafts();
   const pending = state.pendingLogin;
   const version = document.querySelector('meta[name="app-version"]')?.content?.trim();
   const hasVersion = version && version !== "__APP_VERSION__";
@@ -726,7 +654,6 @@ function renderAuth() {
       </section>
     </main>
   `;
-  bindDraftForms();
   bindSubmit("#login-form", submitLogin);
   bindSubmit("#login-2fa-form", submitLoginTwoFactor);
   document.querySelector("#cancel-login-2fa")?.addEventListener("click", () => {
@@ -775,8 +702,6 @@ async function submitLoginTwoFactor(event) {
 }
 
 async function finishLogin(result) {
-  clearActiveDraft();
-  formDrafts.clear();
   state.pendingLogin = null;
   state.twoFactorSetup = null;
   state.bankTwoFactor = { open: false };
@@ -791,7 +716,12 @@ async function finishLogin(result) {
 }
 
 function renderApp() {
-  captureDrafts();
+  if (state.tab !== "bank") {
+    for (const row of [...state.bankTransactions, ...state.ignoredBankTransactions]) {
+      for (const key of Object.keys(row)) if (key.startsWith("_review")) delete row[key];
+    }
+  }
+  if (state.tab !== "expenses") state.csvModal = null;
   if (state.csvModal?.preview && document.querySelectorAll) {
     document.querySelectorAll("[data-preview-row]").forEach((field) => {
       const row = state.csvModal.preview.rows[Number(field.dataset.previewRow)];
@@ -1363,7 +1293,7 @@ function renderExpenseTable(expenses, { editable = false, context = "overview" }
                 }</td>
                 ${
                   editable
-                    ? `<td><div class="row"><span class="autosave-note" data-autosave-status="${expense.id}">${expenseEdits.get(`${state.trackerId}:${expense.id}`)?.failed ? "Not saved" : expenseEdits.has(`${state.trackerId}:${expense.id}`) ? "Saving…" : "Autosaves"}</span>${expenseEdits.get(`${state.trackerId}:${expense.id}`)?.failed ? `<button class="button small" data-retry-expense="${expense.id}">Retry save</button><button class="button small" data-discard-expense="${expense.id}">Discard edit</button>` : ""}<button class="button small" data-delete-expense="${expense.id}">${renderIcon("trash")}Delete</button></div></td>`
+                    ? `<td><div class="row"><span class="autosave-note" data-autosave-status="${expense.id}">${expenseSaves.has(`${state.trackerId}:${expense.id}`) ? "Saving…" : "Autosaves"}</span><button class="button small" data-delete-expense="${expense.id}">${renderIcon("trash")}Delete</button></div></td>`
                     : ""
                 }
               </tr>
@@ -2150,8 +2080,9 @@ async function handleNavigationChange() {
 
 async function logout() {
   if (!allowNavigation()) return;
-  document.querySelectorAll("form[data-dirty]").forEach((form) => form.removeAttribute("data-dirty"));
-  formDrafts.clear(); expenseEdits.clear(); bankHealth.clear(); bankReviewDrafts.clear(); state.notices = [];
+  autosaveTimers.forEach(clearTimeout); autosaveTimers.clear();
+  expenseSaves.clear(); bankHealth.clear(); state.notices = [];
+  clearTrackerData();
   try {
     await api("/api/auth/logout", { method: "DELETE" });
   } catch (_) {}
@@ -2277,7 +2208,6 @@ async function restoreTrackerBackup(event) {
       method: "POST",
       body: JSON.stringify(backup),
     });
-    clearActiveDraft();
     notify(`Restored backup: ${result.expenses} expenses, ${result.categories} categories, ${result.members} members.`);
     await loadBase();
     await loadTrackerData();
@@ -2358,12 +2288,11 @@ function scheduleExpenseAutosave(expenseId) {
   const trackerId = currentTracker().id;
   const payload = expensePayloadFromRow(expenseId);
   const key = `${trackerId}:${expenseId}`;
-  const previous = expenseEdits.get(key);
-  const edit = previous || { revision: 0, saving: false };
+  const previous = expenseSaves.get(key);
+  const edit = previous || { revision: 0, saving: false, saved: { ...state.expenses.find((expense) => expense.id === expenseId) } };
   edit.payload = payload;
   edit.revision += 1;
-  edit.failed = false;
-  expenseEdits.set(key, edit);
+  expenseSaves.set(key, edit);
   state.expenses = state.expenses.map((expense) => expense.id === expenseId ? { ...expense, ...payload,
     category: state.categories.find((item) => item.id === payload.category_id)?.name || expense.category,
     paid_by: currentTracker().members.find((item) => item.user_id === payload.paid_by_id)?.name || expense.paid_by,
@@ -2375,15 +2304,16 @@ function scheduleExpenseAutosave(expenseId) {
 
 async function persistExpenseEdit(trackerId, expenseId) {
   const key = `${trackerId}:${expenseId}`;
-  const edit = expenseEdits.get(key);
+  const edit = expenseSaves.get(key);
   if (!edit || edit.saving) return;
   const revision = edit.revision;
   const payload = { ...edit.payload };
   edit.saving = true;
   try {
     const updated = await api(`/api/trackers/${trackerId}/expenses/${expenseId}`, { method: "PUT", body: JSON.stringify(payload) });
-    if (expenseEdits.get(key) === edit && revision === edit.revision) {
-      expenseEdits.delete(key);
+    edit.saved = updated;
+    if (expenseSaves.get(key) === edit && revision === edit.revision) {
+      expenseSaves.delete(key);
       if (state.user && currentTracker()?.id === trackerId) {
         state.expenses = state.expenses.map((expense) => expense.id === expenseId ? updated : expense);
         setAutosaveStatus(expenseId, "Saved", "positive");
@@ -2391,38 +2321,19 @@ async function persistExpenseEdit(trackerId, expenseId) {
       }
     }
   } catch (error) {
-    edit.failed = true;
-    if (state.user && currentTracker()?.id === trackerId) {
-      state.error = `${error.message} Your expense edit is kept. Use Retry save to try again.`;
-      renderApp();
+    if (expenseSaves.get(key) === edit && revision === edit.revision) {
+      expenseSaves.delete(key);
+      if (state.user && currentTracker()?.id === trackerId) {
+        state.expenses = state.expenses.map((expense) => expense.id === expenseId ? edit.saved : expense);
+        state.error = `${error.message} The expense was not saved. The last saved value has been restored.`;
+        renderApp();
+      }
     }
   } finally {
     edit.saving = false;
-    if (expenseEdits.get(key) === edit && revision !== edit.revision) await persistExpenseEdit(trackerId, expenseId);
+    if (expenseSaves.get(key) === edit && revision !== edit.revision) await persistExpenseEdit(trackerId, expenseId);
+    if (!expenseSaves.has(key)) { clearTimeout(autosaveTimers.get(key)); autosaveTimers.delete(key); }
   }
-}
-
-async function discardExpenseEdit(expenseId) {
-  const trackerId = currentTracker().id;
-  const key = `${trackerId}:${expenseId}`;
-  if (expenseEdits.get(key)?.saving) return;
-  try {
-    const rows = await api(`/api/trackers/${trackerId}/expenses?${new URLSearchParams({ month: state.expenseMonth })}`);
-    if (expenseEdits.get(key)?.saving) return;
-    expenseEdits.delete(key);
-    if (currentTracker()?.id !== trackerId) return;
-    const saved = rows.find((row) => row.id === expenseId);
-    state.expenses = saved ? state.expenses.map((row) => row.id === expenseId ? saved : row) : state.expenses.filter((row) => row.id !== expenseId);
-    state.error = ""; notify("Unsaved edit discarded."); renderApp();
-  } catch (error) { state.error = error.message; renderApp(); }
-}
-
-async function retryExpenseSave(expenseId) {
-  state.error = "";
-  const edit = expenseEdits.get(`${state.trackerId}:${expenseId}`);
-  if (edit) edit.failed = false;
-  await persistExpenseEdit(state.trackerId, expenseId);
-  renderApp();
 }
 
 async function bulkDeleteExpenses() {
@@ -2561,7 +2472,6 @@ async function confirmCsvImport() {
     }),
   );
   if (success) {
-    formDrafts.delete(`${state.user.id}:${tracker.id}:csv-import-form`);
     state.csvModal = null; renderApp();
   }
 }
@@ -2797,12 +2707,6 @@ function normalizeBankLookbackDays(value) {
   return Math.min(Math.max(Number(value) || 8, 1), 730);
 }
 
-function rememberBankDraft(transaction) {
-  const values = Object.fromEntries(Object.entries(transaction).filter(([key]) => key.startsWith("_review")));
-  const dirty = Boolean(transaction._reviewSelected || transaction._reviewCategoryId || (transaction._reviewDescription !== undefined && transaction._reviewDescription !== transaction.description) || (transaction._reviewPaidById && transaction._reviewPaidById !== transaction.default_paid_by_id) || transaction._reviewIsShared === false);
-  bankReviewDrafts.set(`${state.trackerId}:${transaction.id}`, { values, dirty });
-}
-
 function captureBankReviewState() {
   document.querySelectorAll("[data-bank-transaction]").forEach((element) => {
     const transaction = state.bankTransactions.find((row) => row.id === Number(element.dataset.bankTransaction));
@@ -2812,7 +2716,6 @@ function captureBankReviewState() {
     transaction._reviewCategoryId = Number(element.querySelector('[name="category_id"]')?.value) || null;
     transaction._reviewPaidById = Number(element.querySelector('[name="paid_by_id"]')?.value) || transaction.default_paid_by_id;
     transaction._reviewIsShared = Boolean(element.querySelector('[name="is_shared"]')?.checked);
-    rememberBankDraft(transaction);
   });
 }
 
@@ -2849,11 +2752,10 @@ async function changeBankTransactionIgnored(button, transactionId, action) {
     ]);
     if (!state.user || currentTracker()?.id !== trackerId || state.bankLookbackDays !== days) return;
     captureBankReviewState();
-    const drafts = new Map([...state.bankTransactions, ...state.ignoredBankTransactions].map((row) => [row.id, row]));
-    const withDraft = (row) => ({ ...drafts.get(row.id), ...row });
-    state.bankTransactions = reviewRows.map(withDraft);
-    if (action === "ignore") bankReviewDrafts.delete(`${trackerId}:${transactionId}`);
-    state.ignoredBankTransactions = ignoredRows.map(withDraft);
+    const reviewRowsById = new Map([...state.bankTransactions, ...state.ignoredBankTransactions].map((row) => [row.id, row]));
+    const withReviewState = (row) => ({ ...reviewRowsById.get(row.id), ...row });
+    state.bankTransactions = reviewRows.map(withReviewState);
+    state.ignoredBankTransactions = ignoredRows.map(withReviewState);
     state.error = "";
   } catch (error) {
     if (!state.user || currentTracker()?.id !== trackerId) return;
@@ -2931,8 +2833,7 @@ async function importBankTransactions(event) {
     description: row._reviewDescription ?? row.description,
     is_shared: row._reviewIsShared ?? true,
   }));
-  const success = await mutate(() => api(`/api/trackers/${tracker.id}/bank/transactions/import`, { method: "POST", body: JSON.stringify({ transactions }) }));
-  if (success) selected.filter((row) => !state.bankTransactions.some((item) => item.id === row.id)).forEach((row) => bankReviewDrafts.delete(`${tracker.id}:${row.id}`));
+  await mutate(() => api(`/api/trackers/${tracker.id}/bank/transactions/import`, { method: "POST", body: JSON.stringify({ transactions }) }));
 }
 
 async function mutate(operation, { quiet = false } = {}) {
@@ -2943,21 +2844,15 @@ async function mutate(operation, { quiet = false } = {}) {
     const pending = operation();
     renderApp();
     const result = await pending;
-    clearActiveDraft();
     if (!quiet) notify(result?.imported !== undefined ? `Imported ${result.imported} expenses. Skipped ${result.skipped?.length || 0}.` : "Changes saved.");
     await refresh();
     return true;
   } catch (error) {
-    state.error = `${error.message} Your draft has been kept. Review the fields and try again.`;
+    state.error = error.message;
     renderApp();
     return false;
   } finally { state.mutating = false; renderApp(); }
 }
-
-window.addEventListener("beforeunload", (event) => {
-  if (!hasUnsavedChanges() && !state.mutating && !activeSubmission) return;
-  event.preventDefault(); event.returnValue = "";
-});
 
 window.addEventListener("popstate", handleNavigationChange);
 bootstrap();

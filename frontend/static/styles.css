@@ -2232,7 +2232,6 @@ body[data-theme="dark"] .empty {
   .review-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); }
   .review-toolbar > label { width: 100%; }
 }
-.draft-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 10px; background: var(--accent-soft); font-size: 12px; }
 
 .category-totals-header { flex-wrap: wrap; align-items: center; }
 .category-totals-header .compact-label { min-width: 120px; width: auto; }
