@@ -31,6 +31,7 @@ const state = {
   bankConfig: { plaid_configured: false, plaid_env: "sandbox" },
   bankConnections: [],
   bankTransactions: [],
+  bankSyncResult: null,
   ignoredBankTransactions: [],
   ignoredBankExpanded: false,
   bankLookbackDays: Number(localStorage.getItem("buddy_bank_lookback_days")) || 8,
@@ -351,6 +352,7 @@ async function loadTrackerData() {
   state.bankConfig = bankConfig;
   state.bankConnections = bankConnections;
   state.bankTransactions = bankTransactions;
+  state.bankSyncResult = null;
   state.ignoredBankTransactions = ignoredBankTransactions;
   state.ignoredBankExpanded = false;
 }
@@ -1156,6 +1158,7 @@ function renderBankImport() {
       </div>
       <div class="panel stack">
         ${renderSectionTitle("Connections")}
+        ${state.bankSyncResult && state.bankSyncResult.trackerId === tracker?.id ? `<div class="tiny" role="status">${escapeHtml(state.bankSyncResult.message)}</div>` : ""}
         ${
           state.bankConnections.length
             ? `<div class="table-scroll"><table data-mobile-card-label="Connection">
@@ -1191,7 +1194,7 @@ function renderBankImport() {
         <div class="row between">
           <div>
             ${renderSectionTitle("Transactions to review")}
-            <div class="tiny">Showing untracked outgoing transactions from the last ${state.bankLookbackDays} days. Ignore transactions to hide them from review.</div>
+            <div class="tiny">Showing posted, untracked outgoing transactions from the last ${state.bankLookbackDays} days. Pending transactions appear after they post. Ignore transactions to hide them from review.</div>
           </div>
           <div class="row">
             <label class="inline-field">Days
@@ -2309,11 +2312,28 @@ async function syncBankConnection(connectionId, trackerId = currentTracker().id,
   const params = new URLSearchParams({ days: String(state.bankLookbackDays) });
   if (refreshAccounts) params.set("refresh_accounts", "true");
   state.syncingBankConnectionId = connectionId;
+  state.bankSyncResult = null;
   state.error = "";
   renderApp();
   try {
-    await api(`/api/trackers/${trackerId}/bank/connections/${connectionId}/sync?${params}`, { method: "POST" });
+    const result = await api(`/api/trackers/${trackerId}/bank/connections/${connectionId}/sync?${params}`, { method: "POST" });
     await refresh();
+    if (currentTracker()?.id === trackerId) {
+      const added = result.added ?? 0;
+      const modified = result.modified ?? 0;
+      const removed = result.removed ?? 0;
+      const ready = state.bankTransactions.filter((row) => row.connection_id === connectionId).length;
+      const connection = state.bankConnections.find((row) => row.id === connectionId);
+      const institution = connection?.institution_name || "Bank";
+      let message = `${institution}: ${added} added, ${modified} updated, ${removed} removed. ${ready} available to review in the last ${state.bankLookbackDays} days.`;
+      if (result.transactions_update_status === "NOT_READY") {
+        message += " Plaid is still preparing transaction data. Try syncing again shortly.";
+      } else if (added + modified + removed === 0) {
+        message += " No new transaction updates were available.";
+        if (connection?.provider !== "demo") message += " Plaid may not have fetched recent bank activity yet.";
+      }
+      state.bankSyncResult = { trackerId, message };
+    }
   } catch (error) {
     if (currentTracker()?.id === trackerId) {
       try {

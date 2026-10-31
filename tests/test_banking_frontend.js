@@ -102,6 +102,42 @@ test("Failed sync refreshes the persisted reconnection status and keeps its mess
   assert.equal(ui.run("state.syncingBankConnectionId"), null);
 });
 
+test("Empty sync explains that Plaid may not have fetched recent bank activity", async () => {
+  const ui = bankUi();
+  ui.run('state.bankConnections = [{ id: 3, institution_name: "Test Bank", accounts: [] }]');
+  await ui.run("syncBankConnection(3)");
+  assert.match(ui.run("state.bankSyncResult.message"), /Test Bank: 0 added, 0 updated, 0 removed/);
+  assert.match(ui.run("state.bankSyncResult.message"), /Plaid may not have fetched recent bank activity yet/);
+  assert.match(ui.run("renderBankImport()"), /role="status"/);
+  ui.run("state.trackerId = 2; state.trackers.push({ id: 2 })");
+  assert.doesNotMatch(ui.run("renderBankImport()"), /role="status"/);
+});
+
+test("Sync reports provider changes separately from reviewable transactions", async () => {
+  const ui = bankUi();
+  ui.context.fetch = async () => ({ ok: true, status: 201, text: async () => JSON.stringify({ added: 3, modified: 2, removed: 1 }) });
+  ui.run(`refresh = async () => {
+    state.bankTransactions = [{ connection_id: 3 }, { connection_id: 4 }];
+  }`);
+  await ui.run("syncBankConnection(3)");
+  assert.match(ui.run("state.bankSyncResult.message"), /3 added, 2 updated, 1 removed. 1 available to review/);
+  assert.doesNotMatch(ui.run("state.bankSyncResult.message"), /No new transaction updates/);
+});
+
+test("Sync distinguishes data still being prepared from no new updates", async () => {
+  const ui = bankUi();
+  ui.context.fetch = async () => ({ ok: true, status: 201, text: async () => JSON.stringify({
+    added: 0, modified: 0, removed: 0, transactions_update_status: "NOT_READY",
+  }) });
+  await ui.run("syncBankConnection(3)");
+  assert.match(ui.run("state.bankSyncResult.message"), /still preparing transaction data/);
+  assert.doesNotMatch(ui.run("state.bankSyncResult.message"), /No new transaction updates/);
+  ui.context.fetch = async () => ({ ok: false, status: 502, text: async () => JSON.stringify({ detail: "Bank unavailable" }) });
+  await ui.run("syncBankConnection(3)");
+  assert.equal(ui.run("state.bankSyncResult"), null);
+  assert.equal(ui.run("state.error"), "Bank unavailable");
+});
+
 test("Leaving update Link preserves the connection and does not start a sync", async () => {
   const ui = bankUi();
   ui.run('state.bankConnections = [{ id: 3, status: "reauth_required" }]');

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -12,6 +13,9 @@ from app.banking.plaid import PlaidApiError, PlaidClient
 from app.models import BankAccount, BankConnection, BankTransaction, Category, Expense, Tracker, User, utcnow
 from app.schemas import BankTransactionImportItem
 from app.services import get_tracker_for_user
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_plaid_date(value: str | None) -> date | None:
@@ -254,7 +258,7 @@ def upsert_accounts(
 
 def sync_bank_connection(
     session: Session, connection: BankConnection, plaid_client: PlaidClient | None = None, *, refresh_accounts: bool = False,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if connection.provider == "demo":
         connection.last_synced_at = utcnow()
         session.flush()
@@ -297,6 +301,20 @@ def sync_bank_connection(
                     "upstream_status_code": exc.status_code,
                 },
             ) from exc
+        # Record metadata only: never log access tokens, cursors, or transaction payloads.
+        logger.info(
+            "Bank sync page: connection_id=%s request_id=%s added=%s modified=%s removed=%s "
+            "pending=%s has_more=%s cursor_changed=%s transactions_update_status=%s",
+            connection.id,
+            data.get("request_id", ""),
+            len(data.get("added", [])),
+            len(data.get("modified", [])),
+            len(data.get("removed", [])),
+            sum(bool(row.get("pending")) for key in ("added", "modified") for row in data.get(key, [])),
+            bool(data.get("has_more")),
+            data.get("next_cursor", cursor) != cursor,
+            data.get("transactions_update_status") or "unknown",
+        )
         for transaction in data.get("added", []):
             upsert_transaction(session, connection, account_by_provider_id, transaction)
             counts["added"] += 1
@@ -321,7 +339,7 @@ def sync_bank_connection(
     connection.error_message = ""
     connection.last_synced_at = utcnow()
     session.flush()
-    return counts
+    return {**counts, "transactions_update_status": data.get("transactions_update_status")}
 
 
 def upsert_transaction(

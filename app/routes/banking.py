@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from litestar import Controller, Request, delete, get, post
@@ -29,6 +30,9 @@ from app.schemas import BankLinkTokenPayload, BankTokenExchangePayload, BankTran
 from app.services import get_tracker_for_user
 from app.two_factor import consume_bank_link_challenge, create_bank_link_challenge, verify_user_totp
 from app.utils import require_user
+
+
+logger = logging.getLogger(__name__)
 
 
 def require_bank_link_two_factor(user: User, code: str | None) -> None:
@@ -138,6 +142,10 @@ class BankingController(Controller):
                 sync_error = exc
         if sync_error is not None:
             raise sync_error
+        logger.info(
+            "Bank sync committed: tracker_id=%s connection_id=%s days=%s added=%s modified=%s removed=%s",
+            tracker_id, connection_id, normalized_review_days(days), counts["added"], counts["modified"], counts["removed"],
+        )
         return {"status": "ok", "days": normalized_review_days(days), **counts}
 
     @delete("/connections/{connection_id:int}", status_code=200, sync_to_thread=True)

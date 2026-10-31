@@ -85,6 +85,43 @@ class BankingServiceTests(unittest.TestCase):
         Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
 
+    def test_sync_logs_counts_and_readiness_without_transaction_details(self) -> None:
+        with self.Session() as session:
+            user = User(id=1, email="owner@example.test", name="Owner", password_hash="x")
+            tracker = Tracker(id=1, name="Home", created_by_id=1)
+            session.add_all([user, tracker])
+            session.flush()
+            plaid = FakePlaidClient()
+            connection = create_bank_connection(session, tracker, user, "public-test", "Mybank", plaid)
+            response = plaid.sync_transactions("access-test")
+            response.update(request_id="request-diagnostic", transactions_update_status="HISTORICAL_UPDATE_COMPLETE")
+            response["added"][0]["pending"] = True
+            with patch.object(plaid, "sync_transactions", return_value=response):
+                with self.assertLogs("app.banking.service", level="INFO") as logs:
+                    result = sync_bank_connection(session, connection, plaid)
+            self.assertEqual(result["added"], len(response["added"]))
+            self.assertEqual(result["transactions_update_status"], "HISTORICAL_UPDATE_COMPLETE")
+            output = "\n".join(logs.output)
+            for expected in [f"connection_id={connection.id}", "request-diagnostic", "pending=1", "has_more=False", "cursor_changed=False", "HISTORICAL_UPDATE_COMPLETE"]:
+                self.assertIn(expected, output)
+            for private_value in ["access-test", "cursor-1", "txn-outgoing", "METRO", "42.5"]:
+                self.assertNotIn(private_value, output)
+
+            # An empty, successful response can mean either no deltas or data not ready yet.
+            for update_status in ["NOT_READY", "HISTORICAL_UPDATE_COMPLETE", None]:
+                with self.subTest(update_status=update_status):
+                    before = session.query(BankTransaction).count()
+                    with patch.object(plaid, "sync_transactions", return_value={
+                        "added": [], "modified": [], "removed": [], "has_more": False,
+                        "next_cursor": "cursor-1", "transactions_update_status": update_status,
+                    }):
+                        with self.assertLogs("app.banking.service", level="INFO") as logs:
+                            result = sync_bank_connection(session, connection, plaid)
+                    self.assertEqual(result, {"added": 0, "modified": 0, "removed": 0, "transactions_update_status": update_status})
+                    self.assertIn("added=0 modified=0 removed=0", "\n".join(logs.output))
+                    self.assertEqual(session.query(BankTransaction).count(), before)
+                    self.assertEqual(connection.sync_cursor, "cursor-1")
+
     def test_reconnection_refresh_reuses_account_and_preserves_transaction_history(self) -> None:
         with self.Session() as session:
             user = User(id=1, email="owner@example.test", name="Owner", password_hash="x")

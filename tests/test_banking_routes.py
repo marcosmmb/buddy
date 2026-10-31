@@ -124,9 +124,12 @@ with TestClient(app=app) as client:
         plaid.return_value.sync_transactions.return_value = {
             "added": [{"transaction_id": "new-transaction", "account_id": "refreshed-account", "amount": 10}],
             "next_cursor": "recovered-cursor", "has_more": False,
+            "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
         }
         response = client.post(f"{base_url}/connections/{connection_id}/sync?refresh_accounts=true", headers=owner_headers)
         assert response.status_code == 201, response.text
+        assert response.json()["added"] == 1, response.text
+        assert response.json()["transactions_update_status"] == "HISTORICAL_UPDATE_COMPLETE", response.text
         plaid.return_value.get_accounts.assert_called_once_with("access-test")
         plaid.return_value.sync_transactions.assert_called_once_with("access-test", "original-cursor")
         plaid.return_value.exchange_public_token.assert_not_called()
