@@ -14,6 +14,7 @@ from app.models import (
     Category,
     CsvImportConfig,
     Expense,
+    ExpenseDeletion,
     Tracker,
     TrackerMember,
     TrackerMonthlyShare,
@@ -158,6 +159,7 @@ def restore_tracker_backup(session: Session, tracker_id: int, data: dict[str, An
         session.query(BankAccount).filter(BankAccount.id.in_(account_ids)).delete(synchronize_session=False)
     if connection_ids:
         session.query(BankConnection).filter(BankConnection.id.in_(connection_ids)).delete(synchronize_session=False)
+    session.query(ExpenseDeletion).filter(ExpenseDeletion.tracker_id == tracker_id).delete(synchronize_session=False)
     session.query(Expense).filter(Expense.tracker_id == tracker_id).delete(synchronize_session=False)
     session.query(TrackerMonthlyShare).filter(TrackerMonthlyShare.tracker_id == tracker_id).delete(synchronize_session=False)
     session.query(CsvImportConfig).filter(CsvImportConfig.tracker_id == tracker_id).delete(synchronize_session=False)

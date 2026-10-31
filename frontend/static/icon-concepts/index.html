@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buddy — icon concepts</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f7f8fa;color:#24303d;font:15px/1.55 system-ui,sans-serif}main{max-width:1100px;margin:auto;padding:48px 24px}h1{font-size:32px;letter-spacing:-1px;margin:0}p{color:#626d7c}header{max-width:700px;margin-bottom:32px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:20px}article{background:white;border:1px solid #e2e6ec;border-radius:24px;padding:24px;display:flex;flex-direction:column}article h2{font-size:18px;margin:20px 0 0}article p{margin:8px 0 20px;flex:1}.hero{width:128px;height:128px;align-self:center}.sizes{display:flex;align-items:center;gap:18px;padding:16px 0;border-top:1px solid #e2e6ec}.size{display:grid;justify-items:center;gap:8px;font-size:11px;color:#626d7c}.contexts{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}.context{padding:12px;display:flex;align-items:center;gap:8px;border-radius:12px;background:#f1f4f8;font-size:13px}.context.dark{background:#182737;color:#fff8e7}a{color:#285c9d}footer{margin-top:28px;font-size:13px;color:#626d7c}.pick{display:inline-block;font-size:11px;font-weight:700;color:#855900;background:#fff3d9;padding:4px 8px;border-radius:8px;margin-top:8px;align-self:start}
+</style>
+</head>
+<body><main>
+<header><h1>A new face for Buddy</h1><p>Four directions in Buddy’s gold-and-navy palette. Each is an editable SVG, shown at app-icon and small navigation sizes. These are previews; the app’s current icon has not changed.</p></header>
+<div class="grid" id="concepts"></div>
+<footer>All four designs use native vector shapes, with no external fonts or image dependencies.</footer>
+<script>
+const concepts = [
+ ['friendly-bee','1. Friendly bee','Keeps the mascot front and center. Warm, recognizable, and the clearest continuation of Buddy’s personality.','Recommended'],
+ ['honeycomb-b','2. Honeycomb B','A stronger monogram with a subtle bee reference. Simple geometry and a crisp silhouette for browser tabs.',''],
+ ['bee-wallet','3. Bee wallet','Connects the bee theme directly to budgeting. More explicit about what the app does.',''],
+ ['shared-hive','4. Shared hive','Two connected honeycomb cells for shared expenses. The most minimal and abstract option.','']
+];
+document.querySelector('#concepts').innerHTML = concepts.map(([file,title,description,badge]) => `<article><img class="hero" src="${file}.svg" alt="${title}"><h2>${title}</h2>${badge?`<span class="pick">${badge}</span>`:''}<p>${description}</p><div class="sizes">${[48,32,16].map(size=>`<div class="size"><img src="${file}.svg" alt="" width="${size}" height="${size}"><span>${size}px</span></div>`).join('')}</div><div class="contexts"><div class="context"><img src="${file}.svg" width="24" height="24" alt="">Buddy</div><div class="context dark"><img src="${file}.svg" width="24" height="24" alt="">Buddy</div></div><p><a href="${file}.svg" download>Download SVG</a></p></article>`).join('');
+</script>
+</main></body></html>

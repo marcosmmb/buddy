@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Buddy honeycomb B icon">
+  <rect width="128" height="128" rx="32" fill="#fff6e3"/>
+  <path d="m64 15 43 24v50l-43 24-43-24V39Z" fill="#f4be55"/>
+  <path fill="#182737" fill-rule="evenodd" d="M46 36h20c15 0 23 7 23 17 0 7-4 12-10 14 8 3 12 9 12 17 0 12-10 19-26 19H46V36Zm13 12v14h6c7 0 11-2 11-7s-4-7-11-7h-6Zm0 25v18h7c8 0 12-3 12-9s-4-9-12-9h-7Z" transform="translate(0 -5)"/>
+</svg>

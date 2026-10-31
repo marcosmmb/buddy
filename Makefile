@@ -14,7 +14,7 @@ DEMO_USER ?=
 help:
 	@printf "Buddy commands:\n"
 	@printf "  make sync          Install dependencies with uv\n"
-	@printf "  make up            Build and start the local Docker Compose app\n"
+	@printf "  make up            Build and recreate the local Docker Compose app\n"
 	@printf "  make down          Stop the Docker Compose app\n"
 	@printf "  make restart       Restart the Docker Compose app\n"
 	@printf "  make build         Build the Docker Compose image\n"
@@ -30,7 +30,7 @@ sync:
 	$(UV) sync
 
 up:
-	APP_VERSION=$(VERSION) $(COMPOSE) up -d --build
+	APP_VERSION=$(VERSION) $(COMPOSE) up -d --build --force-recreate
 
 build:
 	APP_VERSION=$(VERSION) $(COMPOSE) build

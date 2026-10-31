@@ -104,6 +104,26 @@ class BankingController(Controller):
             )
             return [serialize_bank_connection(connection) for connection in rows]
 
+    @get("/connections/{connection_id:int}/health", sync_to_thread=True)
+    def connection_health(self, request: Request, tracker_id: int, connection_id: int) -> dict[str, Any]:
+        user = require_user(request)
+        with db_session() as session:
+            connection = load_bank_connection_for_user(session, tracker_id, connection_id, user)
+            if connection.provider != "plaid":
+                return {"last_successful_update": None, "last_failed_update": None, "error_code": None, "provider": connection.provider}
+            try:
+                with httpx.Client(timeout=15) as http_client:
+                    result = PlaidClient(http_client).request("/item/get", {"access_token": decrypt_token(connection.encrypted_access_token)})
+            except (PlaidApiError, httpx.RequestError) as exc:
+                raise HTTPException(status_code=502, detail="Bank update status is temporarily unavailable. Try again.") from exc
+            transactions = (result.get("status") or {}).get("transactions") or {}
+            return {
+                "last_successful_update": transactions.get("last_successful_update"),
+                "last_failed_update": transactions.get("last_failed_update"),
+                "error_code": ((result.get("item") or {}).get("error") or {}).get("error_code"),
+                "provider": "plaid",
+            }
+
     @post("/connections/{connection_id:int}/link-token", sync_to_thread=True)
     def reconnect_link_token(
         self, request: Request, tracker_id: int, connection_id: int,

@@ -21,6 +21,8 @@ const state = {
   expenseMonth: localStorage.getItem("buddy_expense_month") || new Date().toISOString().slice(0, 7),
   categoryChartMember: localStorage.getItem("buddy_category_chart_member") || "all",
   categoryChartSort: localStorage.getItem("buddy_category_chart_sort") || "amount",
+  categoryBreakdownExpanded: false,
+  analysisView: localStorage.getItem("buddy_analysis_view") || "category",
   categoryBreakdownSort: localStorage.getItem("buddy_category_breakdown_sort") || "amount",
   categories: [],
   expenses: [],
@@ -52,10 +54,304 @@ const state = {
   twoFactorSetup: null,
   bankTwoFactor: { open: false },
   error: "",
+  notices: [],
+  openSections: {},
+  bankSearch: "",
+  loading: false,
+  loadFailed: false,
+  mutating: false,
 };
 
 const app = document.querySelector("#app");
 const autosaveTimers = new Map();
+const formDrafts = new Map();
+const expenseEdits = new Map();
+const bankHealth = new Map();
+const bankReviewDrafts = new Map();
+let activeSubmission = null;
+let noticeSequence = 0;
+let refreshSequence = 0;
+
+function notify(message, action = null, actionLabel = "Undo") {
+  state.notices = [...(state.notices || []).filter((notice) => notice.action), { id: ++noticeSequence, message, action, actionLabel }];
+}
+
+function renderNotices() {
+  return `<div class="notice-region" aria-label="Notifications">${(state.notices || []).map((notice) => `
+    <div class="notice"><span role="status">${escapeHtml(notice.message)}</span>
+      ${notice.action ? `<button class="button small" data-notice-action="${notice.id}">${escapeHtml(notice.actionLabel)}</button>` : ""}
+      <button class="icon-button" data-dismiss-notice="${notice.id}" aria-label="Dismiss notification">${renderIcon("close")}</button>
+    </div>`).join("")}</div>`;
+}
+
+function draftFields(form) {
+  return [...form.elements].filter((field) => field.name && !["submit", "button", "hidden", "password"].includes(field.type) && !["code", "two_factor_code"].includes(field.name));
+}
+
+function captureDrafts() {
+  for (const form of document.querySelectorAll?.("form[data-draft-key][data-dirty]") || []) {
+    formDrafts.set(form.dataset.draftKey, draftFields(form).map((field) => ({ name: field.name, type: field.type, value: field.value, checked: field.checked, files: field.type === "file" ? field.files : null })));
+  }
+}
+
+function clearActiveDraft() {
+  if (!activeSubmission) return;
+  formDrafts.delete(activeSubmission.key);
+  activeSubmission.form.removeAttribute("data-dirty");
+  for (const form of document.querySelectorAll?.("form[data-draft-key]") || []) {
+    if (form.dataset.draftKey === activeSubmission.key) form.removeAttribute("data-dirty");
+  }
+}
+
+function showDraftNote(form, key) {
+  if (form.querySelector("[data-draft-note]")) return;
+  form.insertAdjacentHTML("afterbegin", '<div class="draft-note" data-draft-note><span>Unsaved changes</span><button class="text-button" type="button">Discard draft</button></div>');
+  form.querySelector("[data-draft-note] button").addEventListener("click", () => {
+    if (activeSubmission || state.mutating) return;
+    formDrafts.delete(key); form.removeAttribute("data-dirty");
+    if (state.user) renderApp(); else renderAuth();
+  });
+}
+
+function bindDraftForms() {
+  for (const form of document.querySelectorAll?.("form[id]") || []) {
+    if (["bank-import-form", "bank-2fa-form", "login-2fa-form"].includes(form.id)) continue;
+    const key = `${state.user?.id || "login"}:${state.trackerId || "none"}:${form.id}${form.id === "monthly-shares-form" ? `:${state.expenseMonth}` : ""}`;
+    form.dataset.draftKey = key;
+    if (activeSubmission?.key === key) {
+      form.setAttribute("aria-busy", "true");
+      form.querySelectorAll('button[type="submit"], button:not([type])').forEach((button) => { button.disabled = true; });
+    }
+    const saved = formDrafts.get(key);
+    if (saved) {
+      const fields = draftFields(form);
+      fields.forEach((field) => {
+        const value = saved.find((item) => item.name === field.name && item.type === field.type && (!["checkbox", "radio"].includes(field.type) || item.value === field.value));
+        if (!value) return;
+        if (field.type === "file") {
+          if (value.files?.length) { try { field.files = value.files; } catch (_) {} }
+        } else if (["checkbox", "radio"].includes(field.type)) field.checked = value.checked;
+        else field.value = value.value;
+      });
+      form.dataset.dirty = "true";
+      showDraftNote(form, key);
+    }
+    for (const event of ["input", "change"]) form.addEventListener(event, () => { form.dataset.dirty = "true"; captureDrafts(); showDraftNote(form, key); });
+  }
+}
+
+function hasUnsavedChanges() {
+  captureDrafts();
+  if (document.querySelectorAll) captureBankReviewState();
+  return formDrafts.size > 0 || expenseEdits.size > 0 || [...bankReviewDrafts.values()].some((draft) => draft.dirty);
+}
+
+function allowNavigation() {
+  if (state.mutating || activeSubmission) { notify("Please wait for the current action to finish."); renderApp(); return false; }
+  return !hasUnsavedChanges() || window.confirm("You have unsaved changes. Leave this screen? Your drafts will stay available until you sign out or reload.");
+}
+
+function bindSubmit(selector, handler) {
+  const element = document.querySelector(selector);
+  if (element && activeSubmission?.form.id === element.id) {
+    element.inert = true; element.setAttribute("aria-busy", "true");
+  }
+  element?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (activeSubmission || state.mutating) return;
+    captureDrafts();
+    const form = event.currentTarget;
+    activeSubmission = { form, key: form.dataset.draftKey };
+    const buttons = [...form.querySelectorAll('button[type="submit"], button:not([type])')];
+    const original = buttons.map((button) => ({ button, disabled: button.disabled, html: button.innerHTML }));
+    buttons.forEach((button) => { button.disabled = true; button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Working…'; });
+    form.setAttribute("aria-busy", "true");
+    form.inert = true;
+    try { await handler(event); }
+    catch (error) { state.error = error.message; renderApp(); }
+    finally {
+      activeSubmission = null;
+      form.removeAttribute("aria-busy");
+      form.inert = false;
+      original.forEach(({ button, disabled, html }) => { button.disabled = disabled; button.innerHTML = html; });
+      if (state.user) renderApp(); else renderAuth();
+    }
+  });
+}
+
+function bindUxEvents() {
+  bindDraftForms();
+  document.querySelectorAll?.("[data-dismiss-notice]").forEach((button) => button.addEventListener("click", () => {
+    state.notices = state.notices.filter((notice) => notice.id !== Number(button.dataset.dismissNotice)); renderApp();
+  }));
+  document.querySelectorAll?.("[data-notice-action]").forEach((button) => button.addEventListener("click", async () => {
+    const notice = state.notices.find((item) => item.id === Number(button.dataset.noticeAction));
+    if (!notice?.action || button.disabled || state.mutating) return;
+    button.disabled = true;
+    try {
+      await notice.action();
+      state.notices = state.notices.filter((item) => item.id !== notice.id);
+      await refresh();
+    } catch (error) { state.error = error.message; renderApp(); }
+  }));
+  document.querySelector("#retry-load")?.addEventListener("click", refresh);
+  document.querySelectorAll?.("[data-connect-bank]").forEach((button) => button.addEventListener("click", () => connectBank()));
+  document.querySelectorAll?.("[data-delete-selected]").forEach((button) => button.addEventListener("click", bulkDeleteExpenses));
+  document.querySelectorAll?.("[data-open-expense]").forEach((button) => button.addEventListener("click", () => openExpenseForm()));
+  document.querySelectorAll?.("[data-go-settings]").forEach((button) => button.addEventListener("click", () => {
+    if (!allowNavigation()) return;
+    state.tab = "settings"; updateNavigationUrl(state.tab); renderApp();
+  }));
+  document.querySelectorAll?.("[data-analysis-view]").forEach((button) => {
+    button.addEventListener("click", () => selectAnalysisView(button.dataset.analysisView, true));
+    button.addEventListener("keydown", (event) => {
+      const index = ANALYSIS_VIEWS.findIndex((item) => item.id === button.dataset.analysisView);
+      const next = event.key === "ArrowRight" ? (index + 1) % ANALYSIS_VIEWS.length
+        : event.key === "ArrowLeft" ? (index + ANALYSIS_VIEWS.length - 1) % ANALYSIS_VIEWS.length
+        : event.key === "Home" ? 0 : event.key === "End" ? ANALYSIS_VIEWS.length - 1 : null;
+      if (next === null) return;
+      event.preventDefault(); selectAnalysisView(ANALYSIS_VIEWS[next].id, true);
+    });
+  });
+  document.querySelector("#toggle-category-totals")?.addEventListener("click", () => {
+    state.categoryBreakdownExpanded = !state.categoryBreakdownExpanded;
+    renderApp();
+  });
+  document.querySelectorAll?.("[data-clear-filters]").forEach((button) => button.addEventListener("click", () => {
+    state.expenseTableFilters[button.dataset.clearFilters] = { paidBy: "all", category: "all", type: "all", search: "" }; renderApp();
+  }));
+  document.querySelectorAll?.("[data-expense-search]").forEach((input) => input.addEventListener("input", () => {
+    const context = input.dataset.expenseSearch;
+    const position = input.selectionStart;
+    state.expenseTableFilters[context].search = input.value;
+    renderApp();
+    const next = document.querySelector(`[data-expense-search="${context}"]`); next?.focus(); next?.setSelectionRange(position, position);
+  }));
+  document.querySelector("#bank-search")?.addEventListener("input", (event) => {
+    captureBankReviewState();
+    const position = event.target.selectionStart;
+    state.bankSearch = event.target.value; renderApp();
+    const next = document.querySelector("#bank-search"); next?.focus(); next?.setSelectionRange(position, position);
+  });
+  document.querySelector("#bank-select-visible")?.addEventListener("click", () => {
+    captureBankReviewState();
+    const rows = visibleBankTransactions();
+    const selected = !rows.every((row) => row._reviewSelected);
+    rows.forEach((row) => { row._reviewSelected = selected; rememberBankDraft(row); }); renderApp();
+  });
+  document.querySelector("#bank-apply-bulk")?.addEventListener("click", applyBankBulkEdits);
+  document.querySelectorAll?.("[data-check-bank-health]").forEach((button) => button.addEventListener("click", () => refreshBankHealth(Number(button.dataset.checkBankHealth), true)));
+  document.querySelectorAll?.("[data-discard-expense]").forEach((button) => button.addEventListener("click", () => discardExpenseEdit(Number(button.dataset.discardExpense))));
+  document.querySelectorAll?.("[data-retry-expense]").forEach((button) => button.addEventListener("click", () => retryExpenseSave(Number(button.dataset.retryExpense))));
+  document.querySelectorAll?.("details[data-section]").forEach((details) => details.addEventListener("toggle", () => {
+    state.openSections[`${state.trackerId}:${details.dataset.section}`] = details.open;
+  }));
+}
+
+function clearTrackerData() {
+  state.categories = []; state.expenses = []; state.overview = null; state.csvConfigs = [];
+  state.monthlyShares = { month: "", shares: [] }; state.periodOptions = { months: [], years: [] };
+  state.bankConnections = []; state.bankTransactions = []; state.ignoredBankTransactions = [];
+  state.bankSyncResult = null; state.bankSearch = ""; state.selectedExpenseIds.clear();
+  state.categoryBreakdownExpanded = false;
+  state.bankConfig = { plaid_configured: false, plaid_env: "sandbox" };
+}
+
+function sectionOpen(name) { return state.openSections[`${state.trackerId}:${name}`] ? "open" : ""; }
+
+function openExpenseForm() {
+  if (state.tab !== "expenses" && !allowNavigation()) return;
+  if (!state.categories.length) { state.tab = "settings"; updateNavigationUrl(state.tab); renderApp(); return; }
+  state.openSections[`${state.trackerId}:add-expense`] = true;
+  state.tab = "expenses"; updateNavigationUrl(state.tab); renderApp();
+  document.querySelector("#expense-form")?.scrollIntoView({ block: "center" });
+  document.querySelector('#expense-form [name="amount"]')?.focus();
+}
+
+function visibleBankTransactions() {
+  const search = (state.bankSearch || "").trim().toLowerCase();
+  return sortedBankTransactions(state.bankTransactions || []).filter((row) => !search || [row.description, row.account, row.institution_name].some((value) => String(value || "").toLowerCase().includes(search)));
+}
+
+function selectedBankCount() { return state.bankTransactions.filter((row) => row._reviewSelected).length; }
+
+function updateSelectionUi() {
+  captureBankReviewState();
+  document.querySelectorAll("[data-bank-count]").forEach((el) => { el.textContent = `${selectedBankCount()} selected`; });
+  document.querySelectorAll("[data-bank-import-button]").forEach((el) => { el.disabled = !selectedBankCount() || !state.categories.length || state.mutating; });
+  document.querySelectorAll("[data-expense-count]").forEach((el) => { el.textContent = `${state.selectedExpenseIds.size} selected`; });
+  document.querySelectorAll("[data-delete-selected], #bulk-delete-expenses").forEach((el) => { el.disabled = !state.selectedExpenseIds.size || state.mutating; });
+}
+
+function applyBankBulkEdits() {
+  captureBankReviewState();
+  const category = document.querySelector("#bulk-bank-category").value;
+  const payer = document.querySelector("#bulk-bank-payer").value;
+  const shared = document.querySelector("#bulk-bank-shared").value;
+  if (!selectedBankCount()) { notify("Select transactions before applying changes."); renderApp(); return; }
+  for (const row of state.bankTransactions.filter((row) => row._reviewSelected)) {
+    if (category) row._reviewCategoryId = Number(category);
+    if (payer) row._reviewPaidById = Number(payer);
+    if (shared) row._reviewIsShared = shared === "shared";
+    rememberBankDraft(row);
+  }
+  // Update visible controls before renderApp captures review drafts again.
+  document.querySelectorAll("[data-bank-transaction]").forEach((el) => {
+    const row = state.bankTransactions.find((item) => item.id === Number(el.dataset.bankTransaction));
+    if (!row?._reviewSelected) return;
+    if (category) el.querySelector('[name="category_id"]').value = category;
+    if (payer) el.querySelector('[name="paid_by_id"]').value = payer;
+    if (shared) el.querySelector('[name="is_shared"]').checked = shared === "shared";
+  });
+  notify(`Updated ${selectedBankCount()} selected transactions. Import them when ready.`); renderApp();
+}
+
+function formatTimestamp(value) {
+  if (!value) return "Not available";
+  const normalized = /Z$|[+-]\d\d:\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? "Not available" : date.toLocaleString();
+}
+
+function renderBankHealth(connection) {
+  const health = bankHealth.get(`${state.trackerId}:${connection.id}`);
+  if (connection.provider === "demo") return '<span class="tiny">Demo connection</span>';
+  if (!health || health.loading) return `<span class="tiny">${health?.loading ? "Checking bank status…" : "Bank update status not checked"}</span><button class="button small" type="button" data-check-bank-health="${connection.id}">Check status</button>`;
+  if (health.error) return `<span class="tiny">Bank update status unavailable.</span><button class="button small" type="button" data-check-bank-health="${connection.id}">Retry status</button>`;
+  const failed = health.last_failed_update && (!health.last_successful_update || new Date(health.last_failed_update) > new Date(health.last_successful_update));
+  const stale = health.last_successful_update && Date.now() - new Date(health.last_successful_update).getTime() > 48 * 60 * 60 * 1000;
+  const message = health.error_code === "ITEM_LOGIN_REQUIRED" ? "Reconnect to resume bank updates." : health.error_code || failed ? "The bank’s latest update failed. Sync may return older data." : stale ? "No successful bank update in over 48 hours." : !health.last_successful_update ? "The bank has not reported a successful update yet." : "Bank update received.";
+  return `<div class="tiny">Bank last updated: ${escapeHtml(formatTimestamp(health.last_successful_update))}</div><div class="tiny ${failed || stale || health.error_code ? "negative" : ""}">${escapeHtml(message)}</div>`;
+}
+
+async function refreshBankHealth(connectionId, force = false) {
+  const trackerId = currentTracker()?.id;
+  const key = `${trackerId}:${connectionId}`;
+  const old = bankHealth.get(key);
+  if (old?.loading || (!force && old?.checkedAt && Date.now() - old.checkedAt < 60000)) return;
+  bankHealth.set(key, { ...old, loading: true });
+  try {
+    const health = await api(`/api/trackers/${trackerId}/bank/connections/${connectionId}/health`);
+    bankHealth.set(key, { ...health, checkedAt: Date.now() });
+  } catch (_) { bankHealth.set(key, { error: true, checkedAt: Date.now() }); }
+  if (state.user && currentTracker()?.id === trackerId && state.tab === "bank") renderApp();
+}
+
+async function deleteExpenses(ids) {
+  if (!ids.length || state.mutating) return;
+  if (ids.some((id) => expenseEdits.has(`${state.trackerId}:${id}`))) { notify("Save or retry your edits before deleting these expenses."); renderApp(); return; }
+  const trackerId = currentTracker().id;
+  await mutate(async () => {
+    const result = await api(`/api/trackers/${trackerId}/expenses/bulk-delete`, { method: "POST", body: JSON.stringify({ expense_ids: ids }) });
+    ids.forEach((id) => state.selectedExpenseIds.delete(id));
+    if (result.undo_token) notify(`${result.deleted} expense${result.deleted === 1 ? "" : "s"} deleted. Undo is available for 10 minutes.`, async () => {
+      await api(`/api/trackers/${trackerId}/expenses/undo/${encodeURIComponent(result.undo_token)}`, { method: "POST" });
+      notify("Expenses restored.");
+    });
+    return result;
+  }, { quiet: true });
+}
+
 
 function applyTheme() {
   document.body.dataset.theme = state.user?.theme || localStorage.getItem("buddy_theme") || "light";
@@ -72,6 +368,30 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+const ICON_PATHS = {
+  "menu-expand": '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16m4-11 3 3-3 3"/>',
+  "menu-collapse": '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16m7-11-3 3 3 3"/>',
+  wallet: '<path d="M20 8V6a2 2 0 0 0-2-2H6a3 3 0 0 0 0 6h14v10H6a3 3 0 0 1-3-3V7m17 6h-5v4h5"/>',
+  overview: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+  expenses: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Zm3 5h6m-6 4h6"/>',
+  bank: '<path d="m3 8 9-5 9 5H3Zm2 3v6m7-6v6m7-6v6M3 21h18M3 18h18"/>',
+  settings: '<path d="M4 7h4m4 0h8M4 17h8m4 0h4"/><circle cx="10" cy="7" r="2"/><circle cx="14" cy="17" r="2"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
+  shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',
+  logout: '<path d="M10 4H5v16h5m-1-8h12m-4-4 4 4-4 4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
+  download: '<path d="M12 3v13m-5-5 5 5 5-5M4 16v5h16v-5"/>',
+  save: '<path d="M4 3h13l4 4v14H3V3h1Zm3 0v6h10V3M7 21v-8h10v8"/>',
+  trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
+  refresh: '<path d="M20 8a8 8 0 0 0-14-3L3 8m0-5v5h5M4 16a8 8 0 0 0 14 3l3-3m0 5v-5h-5"/>',
+  close: '<path d="m6 6 12 12M6 18 18 6"/>',
+};
+
+function renderIcon(name) {
+  return `<svg class="ui-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name] || ""}</svg>`;
 }
 
 function renderGithubIcon() {
@@ -183,9 +503,9 @@ function currencyOptions(selected) {
 function renderError() {
   if (!state.error) return "";
   return `
-    <div class="error">
+    <div class="error" role="alert">
       <span>${escapeHtml(state.error)}</span>
-      <button class="icon-button" id="close-error" type="button" aria-label="Close error">X</button>
+      <button class="icon-button" id="close-error" type="button" aria-label="Close error">${renderIcon("close")}</button>
     </div>
   `;
 }
@@ -228,7 +548,7 @@ function duplicateExpenses(expenses) {
   return expenses.filter((expense) => duplicates.get(expense.id));
 }
 
-function renderMemberBreakdown(rows, emptyText = "No expenses for this selection.") {
+function renderMemberBreakdown(rows, emptyText = "No expenses for this selection.", { embedded = false } = {}) {
   const tracker = currentTracker();
   const prioritizedRows = prioritizeCurrentUserRows(rows);
   return renderTable(
@@ -252,7 +572,7 @@ function renderMemberBreakdown(rows, emptyText = "No expenses for this selection
     }),
     true,
     emptyText,
-    { rowClasses: prioritizedRows.map((row) => (isCurrentUserRow(row) ? "current-user-row" : "")) },
+    { embedded, rowClasses: prioritizedRows.map((row) => (isCurrentUserRow(row) ? "current-user-row" : "")) },
   );
 }
 
@@ -289,7 +609,7 @@ async function api(path, options = {}) {
   if (response.status === 404 && path.includes("/2fa")) {
     throw new Error("2FA endpoints were not found. Restart or redeploy Buddy so the backend matches this UI.");
   }
-  if (!response.ok) throw new Error(data?.detail || "Request failed");
+  if (!response.ok) { const error = new Error(data?.detail || "Request failed"); error.status = response.status; throw error; }
   return data;
 }
 
@@ -303,10 +623,14 @@ async function bootstrap() {
     state.user = await api("/api/me");
     localStorage.setItem("buddy_theme", state.user.theme);
     applyTheme();
-    await loadBase();
-    await loadTrackerData();
-    renderApp();
+    await refresh();
   } catch (error) {
+    if (error.status !== 401 && error.status !== 403) {
+      state.error = error.message;
+      app.innerHTML = `<main class="auth-page"><section class="auth-panel stack"><h1>Couldn’t load Buddy</h1><p>${escapeHtml(error.message)}</p><button class="button primary" id="retry-bootstrap">Try again</button></section></main>`;
+      document.querySelector("#retry-bootstrap")?.addEventListener("click", bootstrap);
+      return;
+    }
     localStorage.removeItem("buddy_token");
     state.token = null;
     state.error = error.message;
@@ -316,17 +640,20 @@ async function bootstrap() {
 
 async function loadBase() {
   const [users, trackers, currencies] = await Promise.all([api("/api/users"), api("/api/trackers"), api("/api/currencies")]);
+  const previousTrackerId = state.trackerId;
   state.users = users;
   state.trackers = trackers;
   state.currencies = currencies;
   if (!state.trackerId && trackers.length) state.trackerId = trackers[0].id;
   if (state.trackerId && !trackers.some((tracker) => tracker.id === state.trackerId)) state.trackerId = trackers[0]?.id || null;
+  if (state.trackerId !== previousTrackerId) clearTrackerData();
   if (state.trackerId) localStorage.setItem("buddy_tracker_id", String(state.trackerId));
 }
 
 async function loadTrackerData() {
   const tracker = currentTracker();
   if (!tracker) return;
+  const sequence = refreshSequence;
   const overviewParams = new URLSearchParams({ period_type: state.periodType, period: state.period });
   const expenseParams = new URLSearchParams({ month: state.expenseMonth });
   const shareParams = new URLSearchParams({ month: state.expenseMonth });
@@ -343,34 +670,37 @@ async function loadTrackerData() {
     api(`/api/trackers/${tracker.id}/bank/transactions?${bankParams}`),
     api(`/api/trackers/${tracker.id}/bank/transactions/ignored?${bankParams}`),
   ]);
+  if (currentTracker()?.id !== tracker.id || sequence !== refreshSequence) return;
+  if (document.querySelectorAll) captureBankReviewState();
+  const reviewDrafts = new Map(state.bankTransactions.map((row) => [row.id, row]));
   state.categories = categories;
-  state.expenses = expenses;
+  state.expenses = expenses.map((row) => ({ ...row, ...(expenseEdits.get(`${tracker.id}:${row.id}`)?.payload || {}) }));
   state.overview = overview;
   state.periodOptions = periodOptions;
   state.csvConfigs = csvConfigs;
   state.monthlyShares = monthlyShares;
   state.bankConfig = bankConfig;
   state.bankConnections = bankConnections;
-  state.bankTransactions = bankTransactions;
+  state.bankTransactions = bankTransactions.map((row) => ({ ...bankReviewDrafts.get(`${tracker.id}:${row.id}`)?.values, ...reviewDrafts.get(row.id), ...row }));
   state.bankSyncResult = null;
   state.ignoredBankTransactions = ignoredBankTransactions;
   state.ignoredBankExpanded = false;
 }
 
 function renderAuth() {
+  captureDrafts();
   const pending = state.pendingLogin;
+  const version = document.querySelector('meta[name="app-version"]')?.content?.trim();
+  const hasVersion = version && version !== "__APP_VERSION__";
   app.innerHTML = `
     <main class="auth-page">
-      <section class="auth-hero">
-        <div class="auth-brand-cluster">
-          <div class="brand auth-brand"><img class="brand-logo auth-logo" src="/static/buddy-icon.svg?v=9" alt="" /><span>Buddy</span></div>
-          <img class="auth-mascot" src="/static/buddy-mascot-bee.png" alt="Buddy bee mascot" />
-        </div>
-        <h1>Budgets, shared costs, and payback math in one self-hosted place.</h1>
-      </section>
-      <section class="auth-panel">
-        <div class="stack">
-          ${renderSectionTitle("Sign in")}
+      <section class="auth-panel" aria-labelledby="auth-title">
+        <div class="brand auth-brand"><img class="auth-mascot" src="/static/buddy-mascot-bee.png" alt="Buddy bee mascot" width="96" height="96" /><span>Buddy</span></div>
+        <header class="auth-heading">
+          <h1 id="auth-title">${pending ? "One more step" : "Welcome back"}</h1>
+          <p>${pending ? "Enter the code from your authenticator app." : "Your money. Your plans. All together."}</p>
+        </header>
+        <div class="auth-content stack">
           ${renderError()}
           ${
             pending
@@ -386,18 +716,19 @@ function renderAuth() {
                   <button class="button primary" type="submit">Sign in</button>
                 </form>`
           }
-          <div class="auth-footer">
-            <a class="button auth-github-button" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer">
-              ${renderGithubIcon()}
-              View project on GitHub
-            </a>
-          </div>
         </div>
+        <footer class="auth-footer">
+          <a class="auth-github-link" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer">
+            ${renderGithubIcon()}<span>GitHub</span>
+          </a>
+          ${hasVersion ? `<span class="auth-version">Version ${escapeHtml(version)}</span>` : ""}
+        </footer>
       </section>
     </main>
   `;
-  document.querySelector("#login-form")?.addEventListener("submit", submitLogin);
-  document.querySelector("#login-2fa-form")?.addEventListener("submit", submitLoginTwoFactor);
+  bindDraftForms();
+  bindSubmit("#login-form", submitLogin);
+  bindSubmit("#login-2fa-form", submitLoginTwoFactor);
   document.querySelector("#cancel-login-2fa")?.addEventListener("click", () => {
     state.pendingLogin = null;
     state.error = "";
@@ -444,6 +775,8 @@ async function submitLoginTwoFactor(event) {
 }
 
 async function finishLogin(result) {
+  clearActiveDraft();
+  formDrafts.clear();
   state.pendingLogin = null;
   state.twoFactorSetup = null;
   state.bankTwoFactor = { open: false };
@@ -458,41 +791,50 @@ async function finishLogin(result) {
 }
 
 function renderApp() {
+  captureDrafts();
+  if (state.csvModal?.preview && document.querySelectorAll) {
+    document.querySelectorAll("[data-preview-row]").forEach((field) => {
+      const row = state.csvModal.preview.rows[Number(field.dataset.previewRow)];
+      if (row) row._selected = field.checked;
+    });
+  }
   const tracker = currentTracker();
   app.innerHTML = `
     <div class="shell ${state.sidebarCollapsed ? "sidebar-collapsed" : ""}">
       <aside class="sidebar">
         <div class="brand-row">
           <div class="brand"><img class="brand-logo" src="/static/buddy-icon.svg?v=9" alt="" /><span class="sidebar-text">Buddy</span></div>
-          <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Toggle menu">${state.sidebarCollapsed ? ">" : "<"}</button>
+          <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="${state.sidebarCollapsed ? "Expand menu" : "Collapse menu"}" title="${state.sidebarCollapsed ? "Expand menu" : "Collapse menu"}" aria-expanded="${!state.sidebarCollapsed}" aria-controls="sidebar-navigation">${renderIcon(state.sidebarCollapsed ? "menu-expand" : "menu-collapse")}</button>
         </div>
-        <div class="user-block">
-          <div class="sidebar-text">
-            <div class="user-name">${escapeHtml(state.user.name)}</div>
-            <div class="user-email">${escapeHtml(state.user.email)}</div>
-            <div class="tiny">${state.user.is_admin ? "Admin" : "Member"} · ${escapeHtml(state.user.default_currency)}</div>
+        <div class="sidebar-navigation" id="sidebar-navigation">
+          <div class="user-block">
+            <div class="sidebar-text">
+              <div class="user-name">${escapeHtml(state.user.name)}</div>
+              <div class="user-email">${escapeHtml(state.user.email)}</div>
+              <div class="tiny">${state.user.is_admin ? "Admin" : "Member"} · ${escapeHtml(state.user.default_currency)}</div>
+            </div>
           </div>
-        </div>
-        <div class="nav-label sidebar-text">Trackers</div>
-        <div class="tracker-list">
-          ${state.trackers
-            .map(
-              (item) => `
-                <button class="tracker-button ${item.id === state.trackerId ? "active" : ""}" data-tracker="${item.id}">
-                  <strong>${escapeHtml(item.name)}</strong><br />
-                  <span class="tiny sidebar-text">${item.members.length} members · ${escapeHtml(item.default_currency)}</span>
-                </button>
-              `,
-            )
-            .join("")}
-        </div>
-        <div class="tracker-list">
-          <a class="tracker-button ${state.tab === "user-settings" ? "active" : ""}" data-tab="user-settings" href="${tabHref("user-settings")}">User settings</a>
-          ${state.user.is_admin ? `<a class="tracker-button ${state.tab === "admin" ? "active" : ""}" data-tab="admin" href="${tabHref("admin")}">Admin</a>` : ""}
+          <div class="nav-label sidebar-text">Trackers</div>
+          <div class="tracker-list">
+            ${state.trackers
+              .map(
+                (item) => `
+                  <button class="tracker-button ${item.id === state.trackerId && TRACKER_TABS.includes(state.tab) ? "active" : ""}" data-tracker="${item.id}" aria-label="${escapeHtml(item.name)}" title="${escapeHtml(item.name)}">
+                    ${renderIcon("wallet")}
+                    <span class="sidebar-text sidebar-nav-copy"><strong>${escapeHtml(item.name)}</strong><span class="tiny">${item.members.length} members · ${escapeHtml(item.default_currency)}</span></span>
+                  </button>
+                `,
+              )
+              .join("")}
+          </div>
+          <div class="tracker-list">
+            <a class="tracker-button ${state.tab === "user-settings" ? "active" : ""}" data-tab="user-settings" href="${tabHref("user-settings")}" aria-label="User settings" title="User settings">${renderIcon("user")}<span class="sidebar-text">User settings</span></a>
+            ${state.user.is_admin ? `<a class="tracker-button ${state.tab === "admin" ? "active" : ""}" data-tab="admin" href="${tabHref("admin")}" aria-label="Admin" title="Admin">${renderIcon("shield")}<span class="sidebar-text">Admin</span></a>` : ""}
+          </div>
         </div>
         <div class="sidebar-footer">
           <a class="icon-button github-link" href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer" aria-label="Open Buddy on GitHub">${renderGithubIcon()}</a>
-          <button class="button ghost" id="logout-button">Sign out</button>
+          <button class="button ghost" id="logout-button" aria-label="Sign out" title="Sign out">${renderIcon("logout")}<span class="sidebar-text">Sign out</span></button>
         </div>
       </aside>
       <main class="main">
@@ -502,14 +844,24 @@ function renderApp() {
             <p class="muted">${tracker && !["admin", "user-settings"].includes(state.tab) ? `${tracker.members.length} members` : "Self-hosted budgeting and expense tracking."}</p>
           </div>
         </div>
+        ${state.loading || state.mutating ? `<div class="loading-status" role="status"><span class="spinner" aria-hidden="true"></span>${state.mutating ? "Saving changes…" : "Updating…"}</div>` : ""}
         ${renderError()}
+        ${state.loadFailed ? '<div class="load-retry"><button class="button" id="retry-load">Retry loading</button></div>' : ""}
         ${renderContent()}
       </main>
     </div>
     ${renderBankTwoFactorModal()}
+    ${renderNotices()}
   `;
   prepareResponsiveTables();
   bindAppEvents();
+  bindUxEvents();
+  if (state.mutating) document.querySelectorAll(".main button, .main input, .main select, .main textarea").forEach((field) => { field.disabled = true; });
+  if (state.tab === "bank") {
+    state.bankConnections.filter((row) => row.provider === "plaid").forEach((row) => {
+      if (!bankHealth.has(`${state.trackerId}:${row.id}`)) refreshBankHealth(row.id);
+    });
+  }
 }
 
 function responsiveTableHeaderLabel(header) {
@@ -570,11 +922,11 @@ function collapseSidebarOnMobile() {
 function renderContent() {
   if (state.tab === "admin") return state.user.is_admin ? renderAdmin() : `<div class="empty">Admin access required.</div>`;
   if (state.tab === "user-settings") return renderUserSettings();
-  if (!currentTracker()) return state.user.is_admin ? renderAdmin() : `<div class="empty">No trackers yet.</div>`;
+  if (!currentTracker()) return state.user.is_admin ? renderAdmin() : `<div class="empty">No trackers yet. Ask your administrator to invite you to a tracker.</div>`;
   if (!TRACKER_TABS.includes(state.tab)) state.tab = "overview";
   return `
     <div class="tabs">
-      ${TRACKER_TABS.map((tab) => `<a class="tab ${state.tab === tab ? "active" : ""}" data-tab="${tab}" href="${tabHref(tab)}">${label(tab)}</a>`).join("")}
+      ${TRACKER_TABS.map((tab) => `<a class="tab ${state.tab === tab ? "active" : ""}" data-tab="${tab}" href="${tabHref(tab)}" ${state.tab === tab ? 'aria-current="page"' : ""}>${renderIcon(tab)}<span>${label(tab)}</span></a>`).join("")}
     </div>
     ${state.tab === "overview" ? renderOverview() : ""}
     ${state.tab === "expenses" ? renderExpenses() : ""}
@@ -636,7 +988,7 @@ function renderMonthlySettlements() {
     (left, right) => Number(settlementIncludesCurrentUser(right)) - Number(settlementIncludesCurrentUser(left)),
   );
   return `
-    <div class="panel stack">
+    <div class="stack member-settlements">
       <div>
         ${renderSectionTitle("Who owes who")}
         <p class="muted">Based on shared expenses and the share split for ${escapeHtml(state.overview?.period || state.period)}.</p>
@@ -664,17 +1016,19 @@ function renderMonthlySettlements() {
   `;
 }
 
-function renderCategoryBreakdownTable(data) {
+function renderCategoryBreakdownTable(data, { embedded = false } = {}) {
   const byPerson = new Map();
   for (const row of data.by_person_category || []) {
     if (!byPerson.has(row.category)) byPerson.set(row.category, []);
     byPerson.get(row.category).push(row);
   }
   const rows = sortCategoryRows(data.by_category || [], state.categoryBreakdownSort);
+  const visible = state.categoryBreakdownExpanded ? rows : rows.slice(0, 6);
+  const total = rows.reduce((sum, row) => sum + Number(row.total || 0), 0);
   return `
-    <div class="panel stack">
-      <div class="row between table-header">
-        ${renderSectionTitle("Total by category")}
+    <div class="${embedded ? "stack" : "panel stack"}">
+      <div class="row between category-totals-header">
+        <div>${embedded ? "" : renderSectionTitle("Total by category")}<p class="muted">${rows.length ? `${visible.length} of ${rows.length} categories · Share of spending` : "Spending grouped by category"}</p></div>
         <label class="compact-label">Order
           <select id="category-breakdown-sort">
             <option value="amount" ${state.categoryBreakdownSort === "amount" ? "selected" : ""}>Amount</option>
@@ -682,35 +1036,23 @@ function renderCategoryBreakdownTable(data) {
           </select>
         </label>
       </div>
-      ${
-        rows.length
-          ? `<div class="table-scroll"><table data-mobile-card-label="Category">
-              <thead><tr><th>Category</th><th>Total</th><th>Paid by person</th></tr></thead>
-              <tbody>
-                ${rows
-                  .map(
-                    (row) => `
-                    <tr>
-                      <td><span class="swatch" style="background:${escapeHtml(row.color || "#f1b84b")}"></span>${escapeHtml(row.name)}</td>
-                      <td>${currency(row.total)}</td>
-                      <td>
-                        <div class="person-total-list">
-                          ${prioritizeCurrentUserRows(byPerson.get(row.name) || [])
-                            .map((personRow) => {
-                              const current = isCurrentUserRow(personRow);
-                              return `<div class="person-total ${current ? "current-user-emphasis" : ""}"><span>${escapeHtml(personRow.person)}${current ? renderCurrentUserBadge() : ""}</span><strong class="${current ? "current-user-value" : ""}">${currency(personRow.total)}</strong></div>`;
-                            })
-                            .join("")}
-                        </div>
-                      </td>
-                    </tr>
-                  `,
-                  )
-                  .join("")}
-              </tbody>
-            </table></div>`
-          : `<div class="empty">No data for this selection.</div>`
-      }
+      ${rows.length ? `<ul class="category-totals-list" id="category-totals-list">
+        ${visible.map((row) => {
+          const people = prioritizeCurrentUserRows(byPerson.get(row.name) || []);
+          const share = total > 0 ? Number(row.total || 0) / total * 100 : 0;
+          return `<li class="category-total-item">
+            <div class="category-total-row">
+              <span class="category-total-name"><span class="swatch" style="background:${escapeHtml(row.color || "#f1b84b")}"></span>${escapeHtml(row.name)}</span>
+              <span class="amount">${currency(row.total)}</span>
+              <span class="tiny category-share" aria-label="${share.toFixed(1)} percent of spending">${share.toFixed(1)}%</span>
+            </div>
+            ${people.length ? `<details class="category-payers"><summary>Who paid <span class="tiny">(${people.length})</span></summary>
+              <div class="person-total-list">${people.map((person) => `<div class="person-total"><span>${escapeHtml(person.person)}${isCurrentUserRow(person) ? renderCurrentUserBadge() : ""}</span><strong>${currency(person.total)}</strong></div>`).join("")}</div>
+            </details>` : ""}
+          </li>`;
+        }).join("")}
+      </ul>` : '<div class="empty compact-empty">No category spending in this period.</div>'}
+      ${rows.length > 6 ? `<button class="button small category-totals-toggle" id="toggle-category-totals" aria-expanded="${state.categoryBreakdownExpanded}" aria-controls="category-totals-list">${state.categoryBreakdownExpanded ? "Show fewer" : `Show all ${rows.length} categories`}</button>` : ""}
     </div>
   `;
 }
@@ -749,15 +1091,43 @@ function renderDuplicateExpenseSection(expenses) {
   `;
 }
 
+const ANALYSIS_VIEWS = [
+  { id: "category", label: "Category chart" },
+  { id: "payer", label: "Payer chart" },
+  { id: "totals", label: "Total by category" },
+];
+
+function selectAnalysisView(view, focus = false) {
+  if (!ANALYSIS_VIEWS.some((item) => item.id === view)) return;
+  state.analysisView = view;
+  localStorage.setItem("buddy_analysis_view", view);
+  renderApp();
+  if (focus) document.querySelector(`#analysis-tab-${view}`)?.focus();
+}
+
+function renderSpendingBreakdown(data) {
+  const view = ANALYSIS_VIEWS.some((item) => item.id === state.analysisView) ? state.analysisView : "category";
+  const payerRows = prioritizeCurrentUserRows(data.by_person || []).map((row) => ({ name: row.name, total: row.total, is_current_user: isCurrentUserRow(row) }));
+  return `<section class="panel stack spending-breakdown" aria-labelledby="analysis-title">
+    <h2 id="analysis-title">Spending breakdown</h2>
+    <div class="analysis-tabs" role="tablist" aria-label="Spending breakdown views">
+      ${ANALYSIS_VIEWS.map((item) => `<button type="button" role="tab" id="analysis-tab-${item.id}" data-analysis-view="${item.id}" aria-selected="${item.id === view}" aria-controls="analysis-panel" tabindex="${item.id === view ? "0" : "-1"}">${item.label}</button>`).join("")}
+    </div>
+    <div id="analysis-panel" class="stack" role="tabpanel" aria-labelledby="analysis-tab-${view}" tabindex="0">
+      ${view === "category" ? `
+        <div class="chart-controls">
+          <label class="compact-label">Member<select id="category-chart-member"><option value="all" ${state.categoryChartMember === "all" ? "selected" : ""}>All</option>${(currentTracker()?.members || []).map((member) => `<option value="${member.user_id}" ${String(member.user_id) === state.categoryChartMember ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}</select></label>
+          <label class="compact-label">Sort<select id="category-chart-sort"><option value="amount" ${state.categoryChartSort === "amount" ? "selected" : ""}>Amount</option><option value="alpha" ${state.categoryChartSort === "alpha" ? "selected" : ""}>Alphabetical</option></select></label>
+        </div>
+        ${renderBarChartRows(categoryRowsForSelectedMember(data))}
+      ` : view === "payer" ? renderBarChartRows(payerRows) : renderCategoryBreakdownTable(data, { embedded: true })}
+    </div>
+  </section>`;
+}
+
 function renderOverview() {
   const data = state.overview?.summary || {};
   const sharedTotal = (data.by_person || []).reduce((total, person) => total + Number(person.shared || 0), 0);
-  const payerRows = prioritizeCurrentUserRows(data.by_person || []).map((row) => ({
-    name: row.name,
-    total: row.total,
-    is_current_user: isCurrentUserRow(row),
-  }));
-  const categoryRows = categoryRowsForSelectedMember(data);
   return `
     <section class="stack">
       <div class="overview-summary-row">
@@ -774,35 +1144,14 @@ function renderOverview() {
         <div class="card metric overview-summary-metric"><span class="muted">Payers</span><span class="metric-value">${data.by_person?.length || 0}</span></div>
       </div>
       ${renderDuplicateExpenseSection(state.overview?.expenses || [])}
-      ${renderMemberBreakdown(state.overview?.member_breakdown || [])}
-      <div class="grid two">
-        <div class="panel stack">
-          <div class="row between chart-header">
-            ${renderSectionTitle("Category chart")}
-            <div class="chart-controls">
-              <label class="compact-label">Member
-                <select id="category-chart-member">
-                  <option value="all" ${state.categoryChartMember === "all" ? "selected" : ""}>All</option>
-                  ${(currentTracker()?.members || []).map((member) => `<option value="${member.user_id}" ${String(member.user_id) === state.categoryChartMember ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}
-                </select>
-              </label>
-              <label class="compact-label">Sort
-                <select id="category-chart-sort">
-                  <option value="amount" ${state.categoryChartSort === "amount" ? "selected" : ""}>Amount</option>
-                  <option value="alpha" ${state.categoryChartSort === "alpha" ? "selected" : ""}>Alphabetical</option>
-                </select>
-              </label>
-            </div>
-          </div>
-          ${renderBarChartRows(categoryRows)}
-        </div>
-        ${renderBarChart("Payer chart", payerRows)}
-      </div>
+      <section class="panel stack" id="member-balances">
+        ${renderMemberBreakdown(state.overview?.member_breakdown || [], undefined, { embedded: true })}
+        ${state.periodType === "month" ? renderMonthlySettlements() : ""}
+      </section>
+      ${renderSpendingBreakdown(data)}
       ${state.periodType === "year" ? renderBarChart("Monthly chart", state.overview?.monthly_totals || [], "month", "total") : ""}
       ${state.periodType === "year" ? renderTable("Total by month", ["Month", "Total"], state.overview?.monthly_totals?.map((row) => [row.month, currency(row.total)]) || []) : ""}
-      ${state.periodType === "month" ? renderMonthlySettlements() : ""}
-      ${renderCategoryBreakdownTable(data)}
-      ${state.periodType === "month" ? `<div class="panel stack">${renderSectionTitle("Expenses this month")}${renderExpenseTable(state.overview?.expenses || [], { context: "overview" })}</div>` : ""}
+      <div class="panel stack" id="overview-expenses">${renderSectionTitle("Expenses in this period")}${renderExpenseTable(state.overview?.expenses || [], { context: "overview" })}</div>
     </section>
   `;
 }
@@ -811,11 +1160,47 @@ function renderExpenses() {
   const tracker = currentTracker();
   const monthlyShares = prioritizeCurrentUserRows(state.monthlyShares.shares || []);
   return `
-    <section class="stack">
-      <div class="toolbar">
-        <label>Expense month<select id="expense-month-select">${monthChoices()}</select></label>
+    <section class="stack expenses-screen">
+      <div class="toolbar between">
+        <label>Month<select id="expense-month-select">${monthChoices()}</select></label>
+        <button class="button primary" data-open-expense>${renderIcon("plus")}Add expense</button>
       </div>
-      <div class="panel stack">
+      <div class="panel stack" id="expenses-list">
+        <div class="row between">
+          ${renderSectionTitle("Expenses")}
+          <div class="row"><span class="tiny" data-expense-count>${state.selectedExpenseIds.size} selected</span><button class="button small danger" id="bulk-delete-expenses" ${state.selectedExpenseIds.size ? "" : "disabled"}>${renderIcon("trash")}Delete selected</button></div>
+        </div>
+        ${renderExpenseTable(state.expenses, { editable: true, context: "monthly" })}
+      </div>
+      <div class="grid two">
+        <details class="panel disclosure" data-section="add-expense" ${sectionOpen("add-expense")}><summary>Add an expense</summary><div class="disclosure-body">
+          <form id="expense-form" class="stack">
+            ${!state.categories.length ? '<div class="empty compact-empty">Create a category before adding expenses.<button type="button" class="button" data-go-settings>Set up categories</button></div>' : ""}
+            <div class="form-row">
+              <label>Date<input name="date" type="date" required value="${new Date().toISOString().slice(0, 10)}" /></label>
+              <label>Amount<input name="amount" type="number" step="0.01" min="0" required /></label>
+            </div>
+            <div class="form-row">
+              <label>Category<select name="category_id" required>${state.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}</select></label>
+              <label>Paid by<select name="paid_by_id" required>${tracker.members.map((member) => `<option value="${member.user_id}">${escapeHtml(member.name)}</option>`).join("")}</select></label>
+            </div>
+            <label>Description<textarea name="description"></textarea></label>
+            <label class="check-row"><input name="is_shared" type="checkbox" checked /> Shared expense</label>
+            <button class="button primary" type="submit" ${state.categories.length ? "" : "disabled"}>${renderIcon("plus")}Add expense</button>
+          </form>
+        </div></details>
+        <details class="panel disclosure" data-section="csv" ${sectionOpen("csv")}><summary>Import or export CSV</summary><div class="stack disclosure-body">
+          <p class="muted">Preview CSV rows before adding them. Rows are unselected by default.</p>
+          ${!state.csvConfigs.length ? '<p class="muted">A CSV schema is needed first. Configure one in Tracker settings, or ask your administrator.</p>' : ""}
+          <button class="button" id="open-csv-import" ${state.csvConfigs.length && state.categories.length ? "" : "disabled"}>${renderIcon("upload")}Open CSV import</button>
+          <form id="csv-export-form" class="stack">
+            <label>Export schema<select name="config_id" required>${state.csvConfigs.map((config) => `<option value="${config.id}">${escapeHtml(config.name)}</option>`).join("")}</select></label>
+            <button class="button" type="submit" ${state.csvConfigs.length ? "" : "disabled"}>${renderIcon("download")}Export ${escapeHtml(state.expenseMonth)} CSV</button>
+          </form>
+        </div></details>
+      </div>
+
+      <details class="panel disclosure" data-section="shares" ${sectionOpen("shares")}><summary>Monthly share settings</summary><div class="stack disclosure-body">
         <div>
           ${renderSectionTitle(`Share split for ${state.expenseMonth}`, "Monthly split used for shared expenses.")}
           <p class="muted">This split is used to allocate shared expenses in this month. It starts from the tracker defaults until you save a custom split.</p>
@@ -839,44 +1224,16 @@ function renderExpenses() {
                     },
                   )
                   .join("")}
-                <button class="button primary" type="submit">Save monthly shares</button>
+                <button class="button primary" type="submit">${renderIcon("save")}Save monthly shares</button>
               </form>`
             : `<div class="empty">Only tracker owners can manage monthly shares.</div>`
         }
       </div>
-      <div class="grid two">
-      <div class="panel stack">
-        ${renderSectionTitle("Add expense")}
-        <form id="expense-form" class="stack">
-          <div class="form-row">
-            <label>Date<input name="date" type="date" required value="${new Date().toISOString().slice(0, 10)}" /></label>
-            <label>Amount<input name="amount" type="number" step="0.01" min="0" required /></label>
-          </div>
-          <div class="form-row">
-            <label>Category<select name="category_id" required>${state.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}</select></label>
-            <label>Paid by<select name="paid_by_id" required>${tracker.members.map((member) => `<option value="${member.user_id}">${escapeHtml(member.name)}</option>`).join("")}</select></label>
-          </div>
-          <label>Description<textarea name="description"></textarea></label>
-          <label class="check-row"><input name="is_shared" type="checkbox" checked /> Shared expense</label>
-          <button class="button primary" type="submit" ${state.categories.length ? "" : "disabled"}>Add expense</button>
-        </form>
-      </div>
-      <div class="panel stack">
-        ${renderSectionTitle("Import CSV")}
-        <p class="muted">Preview CSV rows before adding them. Rows are unselected by default.</p>
-        <button class="button" id="open-csv-import" ${state.csvConfigs.length && state.categories.length ? "" : "disabled"}>Open CSV import</button>
-        <form id="csv-export-form" class="stack">
-          <label>Export schema<select name="config_id" required>${state.csvConfigs.map((config) => `<option value="${config.id}">${escapeHtml(config.name)}</option>`).join("")}</select></label>
-          <button class="button" type="submit" ${state.csvConfigs.length ? "" : "disabled"}>Export ${escapeHtml(state.expenseMonth)} CSV</button>
-        </form>
-      </div>
-      <div class="panel stack" style="grid-column: 1 / -1">
-        <div class="row between compact-action-row">
-          ${renderSectionTitle("Expenses")}
-          <button class="button small" id="bulk-delete-expenses">Delete selected</button>
-        </div>
-        ${renderExpenseTable(state.expenses, { editable: true, context: "monthly" })}
-      </div>
+      </details>
+      <div class="mobile-action-bar">
+        <span data-expense-count>${state.selectedExpenseIds.size} selected</span>
+        <button class="button danger" data-delete-selected ${state.selectedExpenseIds.size ? "" : "disabled"}>Delete</button>
+        <button class="button primary" data-open-expense>${renderIcon("plus")}Add expense</button>
       </div>
     </section>
     ${renderCsvModal()}
@@ -904,6 +1261,8 @@ function filteredAndSortedExpenses(expenses, context) {
   const filters = state.expenseTableFilters[context];
   const sort = state.expenseTableSort[context];
   const filtered = expenses.filter((expense) => {
+    const search = (filters.search || "").trim().toLowerCase();
+    if (search && ![expense.description, expense.category, expense.paid_by].some((value) => String(value || "").toLowerCase().includes(search))) return false;
     if (filters.paidBy !== "all" && String(expense.paid_by_id) !== filters.paidBy) return false;
     if (filters.category !== "all" && String(expense.category_id) !== filters.category) return false;
     if (filters.type === "shared" && !expense.is_shared) return false;
@@ -942,6 +1301,7 @@ function renderExpenseTable(expenses, { editable = false, context = "overview" }
   const duplicates = expenseDuplicateMap(expenses);
   return `
     <div class="expense-table-toolbar">
+      <label class="expense-search">Search expenses<input type="search" data-expense-search="${context}" placeholder="Description, category, or payer" value="${escapeHtml(filters.search || "")}" /></label>
       <div class="expense-filter-controls">
         <label class="compact-label">Who paid
           <select data-expense-filter="${context}" data-filter-key="paidBy">
@@ -963,35 +1323,35 @@ function renderExpenseTable(expenses, { editable = false, context = "overview" }
           </select>
         </label>
       </div>
-      <span class="tiny-line">Showing ${visibleExpenses.length} of ${expenses.length}</span>
+      <span class="tiny-line">Showing ${visibleExpenses.length} of ${expenses.length}</span><button class="button small" data-clear-filters="${context}">Clear filters</button>
     </div>
     ${
       visibleExpenses.length
         ? `<div class="table-scroll">
-      <table class="expense-table" data-mobile-card-label="Expense">
+      <table class="expense-table${editable ? "" : " expense-table-compact"}" data-mobile-card-label="Expense">
         <thead><tr>${editable ? "<th></th>" : ""}${renderExpenseSortHeader(context, "date", "Date")}${renderExpenseSortHeader(context, "category", "Category")}${renderExpenseSortHeader(context, "paidBy", "Paid by")}${renderExpenseSortHeader(context, "description", "Description")}${renderExpenseSortHeader(context, "type", "Type")}${renderExpenseSortHeader(context, "amount", "Amount")}${editable ? "<th></th>" : ""}</tr></thead>
         <tbody>
           ${visibleExpenses
             .map(
               (expense) => `
               <tr data-expense-row="${expense.id}" class="${duplicates.get(expense.id) ? "duplicate-row" : ""}">
-                ${editable ? `<td><input class="compact-check" type="checkbox" data-expense-select="${expense.id}" ${state.selectedExpenseIds.has(expense.id) ? "checked" : ""} /></td>` : ""}
-                <td>${editable ? `<input class="table-input" name="date" type="date" value="${escapeHtml(expense.date)}" />` : escapeHtml(expense.date)}</td>
-                <td>${
+                ${editable ? `<td><input class="compact-check" type="checkbox" data-expense-select="${expense.id}" aria-label="Select expense: ${escapeHtml(expense.description || expense.date)}" ${state.selectedExpenseIds.has(expense.id) ? "checked" : ""} /></td>` : ""}
+                <td class="expense-date">${editable ? `<input class="table-input" name="date" type="date" value="${escapeHtml(expense.date)}" />` : escapeHtml(expense.date)}</td>
+                <td class="expense-category">${
                   editable
                     ? `<select class="table-input" name="category_id">${state.categories.map((category) => `<option value="${category.id}" ${category.id === expense.category_id ? "selected" : ""}>${escapeHtml(category.name)}</option>`).join("")}</select>`
                     : `<span class="swatch" style="background:${escapeHtml(expense.category_color)}"></span>${escapeHtml(expense.category)}`
                 }</td>
-                <td>${
+                <td class="expense-payer">${
                   editable
                     ? `<select class="table-input" name="paid_by_id">${currentTracker().members.map((member) => `<option value="${member.user_id}" ${member.user_id === expense.paid_by_id ? "selected" : ""}>${escapeHtml(member.name)}</option>`).join("")}</select>`
                     : escapeHtml(expense.paid_by)
                 }</td>
-                <td>
+                <td class="expense-description">
                   ${editable ? `<input class="table-input" name="description" value="${escapeHtml(expense.description)}" />` : escapeHtml(expense.description)}
                   ${duplicates.get(expense.id) ? `<span class="duplicate-pill">Possible duplicate</span>` : ""}
                 </td>
-                <td>${
+                <td class="expense-type">${
                   editable
                     ? `<label class="check-row table-check"><input name="is_shared" type="checkbox" ${expense.is_shared ? "checked" : ""} /> Shared</label>`
                     : `<span class="pill">${expense.is_shared ? "Shared" : "Individual"}</span>`
@@ -1003,7 +1363,7 @@ function renderExpenseTable(expenses, { editable = false, context = "overview" }
                 }</td>
                 ${
                   editable
-                    ? `<td><div class="row"><span class="autosave-note" data-autosave-status="${expense.id}">Autosaves</span><button class="button small" data-delete-expense="${expense.id}">Delete</button></div></td>`
+                    ? `<td><div class="row"><span class="autosave-note" data-autosave-status="${expense.id}">${expenseEdits.get(`${state.trackerId}:${expense.id}`)?.failed ? "Not saved" : expenseEdits.has(`${state.trackerId}:${expense.id}`) ? "Saving…" : "Autosaves"}</span>${expenseEdits.get(`${state.trackerId}:${expense.id}`)?.failed ? `<button class="button small" data-retry-expense="${expense.id}">Retry save</button><button class="button small" data-discard-expense="${expense.id}">Discard edit</button>` : ""}<button class="button small" data-delete-expense="${expense.id}">${renderIcon("trash")}Delete</button></div></td>`
                     : ""
                 }
               </tr>
@@ -1013,8 +1373,9 @@ function renderExpenseTable(expenses, { editable = false, context = "overview" }
         </tbody>
       </table>
     </div>`
-        : `<div class="empty expense-table-empty">${expenses.length ? "No expenses match these filters." : "No expenses for this selection."}</div>`
+        : `<div class="empty expense-table-empty">${expenses.length ? "No expenses match these filters." : "No expenses for this selection."}<button class="button" ${expenses.length ? `data-clear-filters="${context}"` : "data-open-expense"}>${expenses.length ? "Clear filters" : "Add an expense"}</button></div>`
     }
+    ${context === "overview" ? `<div class="expense-subtotal" role="status"><span>Subtotal of listed expenses</span><strong class="amount">${currency(visibleExpenses.reduce((total, expense) => total + Number(expense.amount || 0), 0))}</strong></div>` : ""}
   `;
 }
 
@@ -1028,7 +1389,7 @@ function renderCsvModal() {
       <div class="modal panel stack">
         <div class="row between compact-action-row">
           ${renderSectionTitle("Import CSV")}
-          <button class="button small" id="close-csv-import">Close</button>
+          <button class="button small" id="close-csv-import">${renderIcon("close")}Close</button>
         </div>
         ${
           rows.length
@@ -1054,7 +1415,7 @@ function renderCsvModal() {
                         .map(
                           (row, index) => `
                           <tr>
-                            <td><input class="compact-check" type="checkbox" data-preview-row="${index}" /></td>
+                            <td><input class="compact-check" type="checkbox" data-preview-row="${index}" ${row._selected ? "checked" : ""} /></td>
                             <td>${escapeHtml(row.date)}</td>
                             <td>${escapeHtml(row.category)}</td>
                             <td>${escapeHtml(row.paid_by)}</td>
@@ -1073,7 +1434,7 @@ function renderCsvModal() {
                     </tbody>
                   </table>
                 </div>
-                <button class="button primary" id="confirm-csv-import">Import selected</button>
+                <button class="button primary" id="confirm-csv-import">${renderIcon("upload")}Import selected</button>
               </div>
             `
             : `
@@ -1084,7 +1445,7 @@ function renderCsvModal() {
                   <label>Fallback category<select name="fallback_category_id" required>${state.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}</select></label>
                   <label>Fallback paid by<select name="fallback_paid_by_id" required>${tracker.members.map((member) => `<option value="${member.user_id}">${escapeHtml(member.name)}</option>`).join("")}</select></label>
                 </div>
-                <button class="button primary" type="submit">Preview CSV</button>
+                <button class="button primary" type="submit">${renderIcon("upload")}Preview CSV</button>
               </form>
             `
         }
@@ -1139,7 +1500,7 @@ function renderBankDateSortHeader() {
 
 function renderBankImport() {
   const tracker = currentTracker();
-  const rows = sortedBankTransactions(state.bankTransactions || []);
+  const rows = visibleBankTransactions();
   return `
     <section class="stack">
       <div class="panel stack">
@@ -1148,12 +1509,12 @@ function renderBankImport() {
             ${renderSectionTitle("Bank import")}
             <p class="muted">Connect a bank account, sync outgoing transactions, then choose categories before importing them as expenses.</p>
           </div>
-          <button class="button primary" id="connect-bank" ${state.bankConfig.plaid_configured ? "" : "disabled"}>Connect bank</button>
+          <button class="button primary" id="connect-bank" ${state.bankConfig.plaid_configured ? "" : "disabled"}>${renderIcon("bank")}Connect bank</button>
         </div>
         ${
           state.bankConfig.plaid_configured
-            ? `<div class="tiny">Plaid environment: ${escapeHtml(state.bankConfig.plaid_env)}</div>`
-            : `<div class="error">Plaid is not configured. Set PLAID_CLIENT_ID and PLAID_SECRET to enable bank import.</div>`
+            ? ""
+            : `<div class="error">Bank connections are not available on this server yet. Ask your administrator to enable them.</div>`
         }
       </div>
       <div class="panel stack">
@@ -1161,33 +1522,23 @@ function renderBankImport() {
         ${state.bankSyncResult && state.bankSyncResult.trackerId === tracker?.id ? `<div class="tiny" role="status">${escapeHtml(state.bankSyncResult.message)}</div>` : ""}
         ${
           state.bankConnections.length
-            ? `<div class="table-scroll"><table data-mobile-card-label="Connection">
-                <thead><tr><th>Institution</th><th>Accounts</th><th>Status</th><th>Last sync</th><th></th></tr></thead>
-                <tbody>
-                  ${state.bankConnections
-                    .map(
-                      (connection) => `
-                      <tr>
-                        <td>${escapeHtml(connection.institution_name)}</td>
-                        <td>${connection.accounts.map((account) => `${escapeHtml(account.name)} ${account.mask ? `**${escapeHtml(account.mask)}` : ""}`).join("<br />")}</td>
-                        <td>${connection.status === "reauth_required" ? "Reconnection required" : escapeHtml(connection.status)}${connection.error_message ? `<div class="tiny">${escapeHtml(connection.error_message)}</div>` : ""}</td>
-                        <td>${connection.last_synced_at ? escapeHtml(connection.last_synced_at.slice(0, 19).replace("T", " ")) : "Never"}</td>
-                        <td>
-                          ${connection.provider === "plaid" ? `<button class="button small ${connection.status === "reauth_required" ? "primary" : ""}" data-reconnect-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>Reconnect</button>` : ""}
-                          <button class="button small" data-sync-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>
-                            ${state.syncingBankConnectionId === connection.id ? `<span class="spinner" aria-hidden="true"></span>Syncing…` : "Sync"}
-                          </button>
-                          <button class="button small danger" type="button" data-remove-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>
-                            ${state.removingBankConnectionId === connection.id ? "Removing…" : "Remove"}
-                          </button>
-                        </td>
-                      </tr>
-                    `,
-                    )
-                    .join("")}
-                </tbody>
-              </table></div>`
-            : `<div class="empty">No bank connections yet.</div>`
+            ? `<div class="bank-connection-list">${state.bankConnections.map((connection) => `
+                <article class="bank-connection">
+                  <div class="bank-connection-heading">
+                    <div><h3>${escapeHtml(connection.institution_name)}</h3><p class="muted bank-account-list">${connection.accounts.map((account) => `${escapeHtml(account.name)}${account.mask ? ` · **${escapeHtml(account.mask)}` : ""}`).join("<br />")}</p></div>
+                    <span class="pill">${connection.status === "reauth_required" ? "Reconnection required" : escapeHtml(connection.status)}</span>
+                  </div>
+                  ${connection.error_message ? `<p class="tiny negative">${escapeHtml(connection.error_message)}</p>` : ""}
+                  <div class="bank-connection-bottom">
+                    <div class="bank-update-history"><div class="tiny">Last successful sync: ${escapeHtml(formatTimestamp(connection.last_synced_at))}</div>${renderBankHealth(connection)}</div>
+                    <div class="bank-connection-actions" role="group" aria-label="${escapeHtml(connection.institution_name)} connection actions">
+                      ${connection.provider === "plaid" ? `<button type="button" class="button small ${connection.status === "reauth_required" ? "primary" : ""}" data-reconnect-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>${renderIcon("refresh")}Reconnect</button>` : ""}
+                      <button type="button" class="button small" data-sync-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>${state.syncingBankConnectionId === connection.id ? '<span class="spinner" aria-hidden="true"></span>Syncing…' : `${renderIcon("download")}Sync`}</button>
+                      <button type="button" class="button small danger" data-remove-bank="${connection.id}" ${state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null ? "disabled" : ""}>${renderIcon("trash")}${state.removingBankConnectionId === connection.id ? "Removing…" : "Remove"}</button>
+                    </div>
+                  </div>
+                </article>`).join("")}</div>`
+            : `<div class="empty">Connect a bank to bring transactions here for review.<button class="button" type="button" data-connect-bank ${state.bankConfig.plaid_configured ? "" : "disabled"}>Connect a bank</button></div>`
         }
       </div>
       <form id="bank-import-form" class="panel stack">
@@ -1200,9 +1551,23 @@ function renderBankImport() {
             <label class="inline-field">Days
               <input class="compact-input" id="bank-lookback-days" type="number" min="1" max="730" step="1" value="${state.bankLookbackDays}" />
             </label>
-            <button class="button primary" type="submit" ${rows.length && state.categories.length ? "" : "disabled"}>Import selected</button>
+            <button class="button primary" type="submit" data-bank-import-button ${selectedBankCount() && state.categories.length ? "" : "disabled"}>${renderIcon("upload")}Import selected</button>
           </div>
         </div>
+        <div class="review-toolbar">
+          <label>Search transactions<input id="bank-search" type="search" placeholder="Merchant, description, or account" value="${escapeHtml(state.bankSearch)}" /></label>
+          <button class="button" type="button" id="bank-select-visible">${rows.length && rows.every((row) => row._reviewSelected) ? "Deselect visible" : "Select visible"}</button>
+          <span class="tiny" data-bank-count>${selectedBankCount()} selected</span>
+        </div>
+        <details class="bulk-review disclosure" data-section="bank-bulk" ${sectionOpen("bank-bulk")}>
+          <summary>Edit selected transactions</summary>
+          <div class="review-toolbar disclosure-body">
+            <label>Category<select id="bulk-bank-category"><option value="">Keep current</option>${state.categories.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label>
+            <label>Paid by<select id="bulk-bank-payer"><option value="">Keep current</option>${(tracker.members || []).map((item) => `<option value="${item.user_id}">${escapeHtml(item.name)}</option>`).join("")}</select></label>
+            <label>Type<select id="bulk-bank-shared"><option value="">Keep current</option><option value="shared">Shared</option><option value="individual">Individual</option></select></label>
+            <button class="button" type="button" id="bank-apply-bulk">Apply to selected</button>
+          </div>
+        </details>
         <div class="error bank-import-validation" id="bank-import-validation" role="alert" hidden></div>
         ${
           rows.length
@@ -1242,9 +1607,9 @@ function renderBankImport() {
                     .join("")}
                 </tbody>
               </table></div>`
-            : `<div class="empty">No untracked bank transactions in this review window.</div>`
+            : `<div class="empty">${state.bankSearch ? "No transactions match your search. Try a different description or clear the search." : "Nothing to review in this date range. Sync your bank or increase the number of days above."}</div>`
         }
-        <button class="button primary mobile-only mobile-bank-import-button" type="submit" ${rows.length && state.categories.length ? "" : "disabled"}>Import selected</button>
+        <div class="mobile-action-bar"><span data-bank-count>${selectedBankCount()} selected</span><button class="button primary" data-bank-import-button type="submit" ${selectedBankCount() && state.categories.length ? "" : "disabled"}>${renderIcon("upload")}Import selected</button></div>
       </form>
       ${renderIgnoredBankTransactions()}
     </section>
@@ -1290,8 +1655,8 @@ function renderTrackerSettings() {
                 <label>Name<input name="name" required value="${escapeHtml(tracker.name)}" /></label>
                 <label>Currency<select name="default_currency">${currencyOptions(tracker.default_currency)}</select></label>
                 <div class="row">
-                  <button class="button primary" type="submit">Save tracker</button>
-                  <button class="button danger" id="delete-tracker" type="button">Delete tracker</button>
+                  <button class="button primary" type="submit">${renderIcon("save")}Save tracker</button>
+                  <button class="button danger" id="delete-tracker" type="button">${renderIcon("trash")}Delete tracker</button>
                 </div>
               </form>`
             : `<div class="empty">Only tracker owners can update tracker settings.</div>`
@@ -1315,7 +1680,7 @@ function renderTrackerSettings() {
                     `;
                   })
                   .join("")}
-                <button class="button primary" type="submit">Save members</button>
+                <button class="button primary" type="submit">${renderIcon("save")}Save members</button>
               </form>`
             : `<div class="empty">Only tracker owners can manage members.</div>`
         }
@@ -1325,11 +1690,11 @@ function renderTrackerSettings() {
           ? `<div class="panel stack">
               ${renderSectionTitle("Backup")}
               <div class="row">
-                <button class="button" id="export-tracker-backup" type="button">Export backup</button>
+                <button class="button" id="export-tracker-backup" type="button">${renderIcon("download")}Export backup</button>
               </div>
               <form id="restore-tracker-backup-form" class="stack">
                 <label>Backup file<input name="backup_file" type="file" accept="application/json,.json" required /></label>
-                <button class="button danger" type="submit">Restore backup</button>
+                <button class="button danger" type="submit">${renderIcon("upload")}Restore backup</button>
               </form>
             </div>`
           : ""
@@ -1340,7 +1705,7 @@ function renderTrackerSettings() {
         <form id="category-form" class="category-create-form">
           <label>Name<input name="name" required /></label>
           <label>Color<input name="color" type="color" value="#f1b84b" /></label>
-          <button class="button" type="submit">Add category</button>
+          <button class="button" type="submit">${renderIcon("plus")}Add category</button>
         </form>
         <div class="category-settings-list compact-list">
           ${state.categories
@@ -1348,7 +1713,7 @@ function renderTrackerSettings() {
               (category) => `
               <div class="row between compact-action-row compact-list-row">
                 <span><span class="swatch" style="background:${escapeHtml(category.color)}"></span>${escapeHtml(category.name)}</span>
-                ${canManageTracker() ? `<button class="button small" data-delete-category="${category.id}">Delete</button>` : ""}
+                ${canManageTracker() ? `<button class="button small" data-delete-category="${category.id}">${renderIcon("trash")}Delete</button>` : ""}
               </div>
             `,
             )
@@ -1367,7 +1732,7 @@ function renderTrackerSettings() {
                 <label>Category column<input name="category" placeholder="Category" /></label>
                 <label>Paid by column<input name="paid_by" placeholder="Paid by" /></label>
                 <label class="check-row"><input name="invert_amount" type="checkbox" /> Invert amount sign</label>
-                <button class="button primary" type="submit">Save CSV schema</button>
+                <button class="button primary" type="submit">${renderIcon("save")}Save CSV schema</button>
               </form>
               ${renderTable(
                 "Saved schemas",
@@ -1376,7 +1741,7 @@ function renderTrackerSettings() {
                   config.name,
                   config.invert_amount ? "Yes" : "No",
                   escapeHtml(Object.entries(config.field_map).map(([key, value]) => `${key}: ${value}`).join(", ")),
-                  `<button class="button small" data-delete-csv-config="${config.id}">Delete</button>`,
+                  `<button class="button small" data-delete-csv-config="${config.id}">${renderIcon("trash")}Delete</button>`,
                 ]),
                 true,
               )}
@@ -1399,7 +1764,7 @@ function renderUserSettings() {
           <label>Current password${renderPasswordInput("current_password", { id: "profile-current-password", autocomplete: "current-password" })}</label>
           <label>New password${renderPasswordInput("new_password", { id: "profile-new-password", minlength: "8", autocomplete: "new-password" })}</label>
           <div></div>
-          <button class="button primary" type="submit">Save settings</button>
+          <button class="button primary" type="submit">${renderIcon("save")}Save settings</button>
         </form>
       </div>
       ${renderTwoFactorSettings()}
@@ -1467,7 +1832,7 @@ function renderAdmin() {
           <label>Password${renderPasswordInput("password", { id: "admin-user-password", minlength: "8", required: true, autocomplete: "new-password" })}</label>
           <label>Default currency<select name="default_currency">${currencyOptions(state.user.default_currency)}</select></label>
           <label class="check-row"><input name="is_admin" type="checkbox" /> Admin user</label>
-          <button class="button primary" type="submit">Create user</button>
+          <button class="button primary" type="submit">${renderIcon("plus")}Create user</button>
         </form>
       </div>
       <div class="panel stack" style="grid-column: 1 / -1">
@@ -1480,7 +1845,7 @@ function renderAdmin() {
             escapeHtml(user.email),
             escapeHtml(user.default_currency),
             user.is_admin ? "Admin" : "Member",
-            user.id === state.user.id ? "" : `<button class="button small" data-delete-user="${user.id}">Delete</button>`,
+            user.id === state.user.id ? "" : `<button class="button small" data-delete-user="${user.id}">${renderIcon("trash")}Delete</button>`,
           ]),
           true,
         )}
@@ -1501,7 +1866,7 @@ function renderCreateTracker() {
             .map((user) => `<label class="check-row"><input type="checkbox" name="member_ids" value="${user.id}" ${user.id === state.user?.id ? "checked" : ""} /> ${escapeHtml(user.name)}</label>`)
             .join("")}
         </div>
-        <button class="button primary" type="submit">Create tracker</button>
+        <button class="button primary" type="submit">${renderIcon("plus")}Create tracker</button>
       </form>
     </div>
   `;
@@ -1516,7 +1881,7 @@ function renderTable(title, headers, rows, raw = false, emptyText = "No data for
   };
   const mobileCardLabel = mobileCardLabels[title] || "Item";
   return `
-    <div class="panel stack">
+    <div class="${options.embedded ? "stack" : "panel stack"}">
       ${renderSectionTitle(title)}
       ${
         rows.length
@@ -1543,6 +1908,9 @@ function bindAppEvents() {
   document.querySelector("#logout-button")?.addEventListener("click", logout);
   document.querySelectorAll("[data-tracker]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!allowNavigation()) return;
+      captureBankReviewState();
+      clearTrackerData();
       collapseSidebarOnMobile();
       state.trackerId = Number(button.dataset.tracker);
       state.tab = "overview";
@@ -1558,11 +1926,13 @@ function bindAppEvents() {
       const opensElsewhere = event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
       if (button.tagName === "A" && opensElsewhere) return;
       if (button.tagName === "A") event.preventDefault();
+      if (!allowNavigation()) return;
       collapseSidebarOnMobile();
       state.tab = button.dataset.tab;
       localStorage.setItem("buddy_tab", state.tab);
       updateNavigationUrl(state.tab);
       renderApp();
+      if (state.tab === "bank") state.bankConnections.filter((row) => row.provider === "plaid").forEach((row) => refreshBankHealth(row.id));
     });
   });
   document.querySelectorAll("[data-expense-filter]").forEach((select) => {
@@ -1591,6 +1961,7 @@ function bindAppEvents() {
     renderApp();
   });
   document.querySelector("#period-type")?.addEventListener("change", async (event) => {
+    if (!allowNavigation()) { renderApp(); return; }
     state.periodType = event.target.value;
     state.period = state.periodType === "year" ? String(new Date().getFullYear()) : new Date().toISOString().slice(0, 7);
     localStorage.setItem("buddy_period_type", state.periodType);
@@ -1598,11 +1969,13 @@ function bindAppEvents() {
     await refresh();
   });
   document.querySelector("#period-select")?.addEventListener("change", async (event) => {
+    if (!allowNavigation()) { renderApp(); return; }
     state.period = event.target.value;
     localStorage.setItem("buddy_period", state.period);
     await refresh();
   });
   document.querySelector("#expense-month-select")?.addEventListener("change", async (event) => {
+    if (!allowNavigation()) { renderApp(); return; }
     state.expenseMonth = event.target.value;
     localStorage.setItem("buddy_expense_month", state.expenseMonth);
     await refresh();
@@ -1627,31 +2000,32 @@ function bindAppEvents() {
 
 function bindForms() {
   bindPasswordToggles();
-  document.querySelector("#tracker-form")?.addEventListener("submit", submitTracker);
-  document.querySelector("#tracker-settings-form")?.addEventListener("submit", submitTrackerSettings);
+  bindSubmit("#tracker-form", submitTracker);
+  bindSubmit("#tracker-settings-form", submitTrackerSettings);
   document.querySelector("#delete-tracker")?.addEventListener("click", deleteCurrentTracker);
-  document.querySelector("#admin-user-form")?.addEventListener("submit", submitAdminUser);
-  document.querySelector("#category-form")?.addEventListener("submit", submitCategory);
-  document.querySelector("#expense-form")?.addEventListener("submit", submitExpense);
-  document.querySelector("#csv-import-form")?.addEventListener("submit", submitCsvPreview);
-  document.querySelector("#csv-export-form")?.addEventListener("submit", submitCsvExport);
-  document.querySelector("#csv-config-form")?.addEventListener("submit", submitCsvConfig);
-  document.querySelector("#profile-form")?.addEventListener("submit", submitProfile);
-  document.querySelector("#setup-2fa-form")?.addEventListener("submit", setupTwoFactor);
-  document.querySelector("#enable-2fa-form")?.addEventListener("submit", enableTwoFactor);
-  document.querySelector("#disable-2fa-form")?.addEventListener("submit", disableTwoFactor);
-  document.querySelector("#members-form")?.addEventListener("submit", submitMembers);
-  document.querySelector("#monthly-shares-form")?.addEventListener("submit", submitMonthlyShares);
+  bindSubmit("#admin-user-form", submitAdminUser);
+  bindSubmit("#category-form", submitCategory);
+  bindSubmit("#expense-form", submitExpense);
+  bindSubmit("#csv-import-form", submitCsvPreview);
+  bindSubmit("#csv-export-form", submitCsvExport);
+  bindSubmit("#csv-config-form", submitCsvConfig);
+  bindSubmit("#profile-form", submitProfile);
+  bindSubmit("#setup-2fa-form", setupTwoFactor);
+  bindSubmit("#enable-2fa-form", enableTwoFactor);
+  bindSubmit("#disable-2fa-form", disableTwoFactor);
+  bindSubmit("#members-form", submitMembers);
+  bindSubmit("#monthly-shares-form", submitMonthlyShares);
   document.querySelector("#export-tracker-backup")?.addEventListener("click", (event) => {
     event.preventDefault();
     exportTrackerBackup(event.currentTarget);
   });
-  document.querySelector("#restore-tracker-backup-form")?.addEventListener("submit", restoreTrackerBackup);
+  bindSubmit("#restore-tracker-backup-form", restoreTrackerBackup);
   document.querySelector("#open-csv-import")?.addEventListener("click", () => {
     state.csvModal = { open: true, preview: null };
     renderApp();
   });
   document.querySelector("#close-csv-import")?.addEventListener("click", () => {
+    if (state.mutating || activeSubmission) return;
     state.csvModal = null;
     renderApp();
   });
@@ -1662,17 +2036,19 @@ function bindForms() {
   document.querySelector("#bulk-delete-expenses")?.addEventListener("click", bulkDeleteExpenses);
   document.querySelector("#connect-bank")?.addEventListener("click", () => connectBank());
   document.querySelectorAll("[data-reconnect-bank]").forEach((button) => button.addEventListener("click", () => connectBank(Number(button.dataset.reconnectBank))));
-  document.querySelector("#bank-2fa-form")?.addEventListener("submit", submitBankTwoFactor);
+  bindSubmit("#bank-2fa-form", submitBankTwoFactor);
   document.querySelector("#cancel-bank-2fa")?.addEventListener("click", () => {
     state.bankTwoFactor = { open: false };
     renderApp();
   });
-  document.querySelector("#bank-import-form")?.addEventListener("submit", importBankTransactions);
+  bindSubmit("#bank-import-form", importBankTransactions);
   document.querySelectorAll("[data-ignore-bank]").forEach((button) => button.addEventListener("click", ignoreBankTransaction));
   document.querySelectorAll("[data-restore-bank]").forEach((button) => button.addEventListener("click", restoreBankTransaction));
   document.querySelector("#ignored-bank-transactions")?.addEventListener("toggle", (event) => {
     state.ignoredBankExpanded = event.currentTarget.open;
   });
+  document.querySelector("#bank-import-form")?.addEventListener("input", captureBankReviewState);
+  document.querySelector("#bank-import-form")?.addEventListener("change", captureBankReviewState);
   document.querySelectorAll("#bank-import-form [data-bank-required]").forEach((field) => {
     field.addEventListener("change", () => {
       if (!field.value) return;
@@ -1686,6 +2062,7 @@ function bindForms() {
       row?.classList.toggle("bank-transaction-selected", input.checked);
       if (!input.checked) clearBankRowValidation(row);
       updateBankImportValidationSummary(input.form);
+      updateSelectionUi();
     });
   });
   document.querySelector("#bank-lookback-days")?.addEventListener("change", updateBankLookbackDays);
@@ -1699,6 +2076,7 @@ function bindForms() {
       const expenseId = Number(input.dataset.expenseSelect);
       if (input.checked) state.selectedExpenseIds.add(expenseId);
       else state.selectedExpenseIds.delete(expenseId);
+      updateSelectionUi();
     });
   });
   document.querySelectorAll("[data-expense-row]").forEach((row) => {
@@ -1707,7 +2085,7 @@ function bindForms() {
       field.addEventListener("change", () => scheduleExpenseAutosave(Number(row.dataset.expenseRow)));
     });
   });
-  document.querySelectorAll("[data-delete-expense]").forEach((button) => button.addEventListener("click", () => mutate(() => api(`/api/trackers/${currentTracker().id}/expenses/${button.dataset.deleteExpense}`, { method: "DELETE" }))));
+  document.querySelectorAll("[data-delete-expense]").forEach((button) => button.addEventListener("click", () => deleteExpenses([Number(button.dataset.deleteExpense)])));
 }
 
 function bindPasswordToggles() {
@@ -1724,14 +2102,16 @@ function bindPasswordToggles() {
 }
 
 async function refresh() {
+  const sequence = ++refreshSequence;
   state.error = "";
-  try {
-    await loadBase();
-    await loadTrackerData();
-  } catch (error) {
-    state.error = error.message;
-  }
+  state.loading = true;
+  state.loadFailed = false;
   renderApp();
+  try { await loadBase(); await loadTrackerData(); }
+  catch (error) { state.error = error.message; state.loadFailed = true; }
+  finally {
+    if (sequence === refreshSequence) { state.loading = false; renderApp(); }
+  }
 }
 
 async function refreshOverview(trackerId) {
@@ -1752,10 +2132,12 @@ async function refreshOverview(trackerId) {
 }
 
 async function handleNavigationChange() {
+  if (!allowNavigation()) { updateNavigationUrl(state.tab, state.trackerId, true); return; }
   const params = new URLSearchParams(window.location.search);
   const nextTab = APP_TABS.includes(params.get("tab")) ? params.get("tab") : "overview";
   const nextTrackerId = Number(params.get("tracker")) || state.trackerId;
   const trackerChanged = nextTrackerId !== state.trackerId;
+  if (trackerChanged) { clearTrackerData(); }
   state.tab = nextTab;
   state.trackerId = nextTrackerId;
   if (trackerChanged) state.selectedExpenseIds.clear();
@@ -1767,6 +2149,9 @@ async function handleNavigationChange() {
 }
 
 async function logout() {
+  if (!allowNavigation()) return;
+  document.querySelectorAll("form[data-dirty]").forEach((form) => form.removeAttribute("data-dirty"));
+  formDrafts.clear(); expenseEdits.clear(); bankHealth.clear(); bankReviewDrafts.clear(); state.notices = [];
   try {
     await api("/api/auth/logout", { method: "DELETE" });
   } catch (_) {}
@@ -1892,7 +2277,8 @@ async function restoreTrackerBackup(event) {
       method: "POST",
       body: JSON.stringify(backup),
     });
-    state.error = `Restored backup: ${result.expenses} expenses, ${result.categories} categories, ${result.members} members.`;
+    clearActiveDraft();
+    notify(`Restored backup: ${result.expenses} expenses, ${result.categories} categories, ${result.members} members.`);
     await loadBase();
     await loadTrackerData();
     renderApp();
@@ -1969,59 +2355,78 @@ function setAutosaveStatus(expenseId, text, tone = "") {
 }
 
 function scheduleExpenseAutosave(expenseId) {
-  const tracker = currentTracker();
+  const trackerId = currentTracker().id;
   const payload = expensePayloadFromRow(expenseId);
-  const category = state.categories.find((item) => item.id === payload.category_id);
-  const payer = currentTracker()?.members.find((member) => member.user_id === payload.paid_by_id);
-  state.expenses = state.expenses.map((expense) =>
-    expense.id === expenseId
-      ? {
-          ...expense,
-          ...payload,
-          category: category?.name || expense.category,
-          category_color: category?.color || expense.category_color,
-          paid_by: payer?.name || expense.paid_by,
-        }
-      : expense,
-  );
-  clearTimeout(autosaveTimers.get(expenseId));
-  setAutosaveStatus(expenseId, "Saving...");
-  autosaveTimers.set(
-    expenseId,
-    setTimeout(async () => {
-      try {
-        const updated = await api(`/api/trackers/${tracker.id}/expenses/${expenseId}`, {
-          method: "PUT",
-          body: JSON.stringify(payload),
-        });
-        state.expenses = state.expenses.map((expense) => (expense.id === expenseId ? updated : expense));
+  const key = `${trackerId}:${expenseId}`;
+  const previous = expenseEdits.get(key);
+  const edit = previous || { revision: 0, saving: false };
+  edit.payload = payload;
+  edit.revision += 1;
+  edit.failed = false;
+  expenseEdits.set(key, edit);
+  state.expenses = state.expenses.map((expense) => expense.id === expenseId ? { ...expense, ...payload,
+    category: state.categories.find((item) => item.id === payload.category_id)?.name || expense.category,
+    paid_by: currentTracker().members.find((item) => item.user_id === payload.paid_by_id)?.name || expense.paid_by,
+  } : expense);
+  clearTimeout(autosaveTimers.get(key));
+  setAutosaveStatus(expenseId, "Saving…");
+  autosaveTimers.set(key, setTimeout(() => persistExpenseEdit(trackerId, expenseId), 650));
+}
+
+async function persistExpenseEdit(trackerId, expenseId) {
+  const key = `${trackerId}:${expenseId}`;
+  const edit = expenseEdits.get(key);
+  if (!edit || edit.saving) return;
+  const revision = edit.revision;
+  const payload = { ...edit.payload };
+  edit.saving = true;
+  try {
+    const updated = await api(`/api/trackers/${trackerId}/expenses/${expenseId}`, { method: "PUT", body: JSON.stringify(payload) });
+    if (expenseEdits.get(key) === edit && revision === edit.revision) {
+      expenseEdits.delete(key);
+      if (state.user && currentTracker()?.id === trackerId) {
+        state.expenses = state.expenses.map((expense) => expense.id === expenseId ? updated : expense);
         setAutosaveStatus(expenseId, "Saved", "positive");
-        await refreshOverview(tracker.id);
-      } catch (error) {
-        state.error = error.message;
-        setAutosaveStatus(expenseId, "Not saved", "negative");
-        renderApp();
+        await refreshOverview(trackerId);
       }
-    }, 650),
-  );
+    }
+  } catch (error) {
+    edit.failed = true;
+    if (state.user && currentTracker()?.id === trackerId) {
+      state.error = `${error.message} Your expense edit is kept. Use Retry save to try again.`;
+      renderApp();
+    }
+  } finally {
+    edit.saving = false;
+    if (expenseEdits.get(key) === edit && revision !== edit.revision) await persistExpenseEdit(trackerId, expenseId);
+  }
+}
+
+async function discardExpenseEdit(expenseId) {
+  const trackerId = currentTracker().id;
+  const key = `${trackerId}:${expenseId}`;
+  if (expenseEdits.get(key)?.saving) return;
+  try {
+    const rows = await api(`/api/trackers/${trackerId}/expenses?${new URLSearchParams({ month: state.expenseMonth })}`);
+    if (expenseEdits.get(key)?.saving) return;
+    expenseEdits.delete(key);
+    if (currentTracker()?.id !== trackerId) return;
+    const saved = rows.find((row) => row.id === expenseId);
+    state.expenses = saved ? state.expenses.map((row) => row.id === expenseId ? saved : row) : state.expenses.filter((row) => row.id !== expenseId);
+    state.error = ""; notify("Unsaved edit discarded."); renderApp();
+  } catch (error) { state.error = error.message; renderApp(); }
+}
+
+async function retryExpenseSave(expenseId) {
+  state.error = "";
+  const edit = expenseEdits.get(`${state.trackerId}:${expenseId}`);
+  if (edit) edit.failed = false;
+  await persistExpenseEdit(state.trackerId, expenseId);
+  renderApp();
 }
 
 async function bulkDeleteExpenses() {
-  const tracker = currentTracker();
-  const expenseIds = [...document.querySelectorAll("[data-expense-select]:checked")].map((input) => Number(input.dataset.expenseSelect));
-  if (!expenseIds.length) {
-    state.error = "Select at least one expense to delete.";
-    renderApp();
-    return;
-  }
-  await mutate(async () => {
-    const result = await api(`/api/trackers/${tracker.id}/expenses/bulk-delete`, {
-      method: "POST",
-      body: JSON.stringify({ expense_ids: expenseIds }),
-    });
-    expenseIds.forEach((expenseId) => state.selectedExpenseIds.delete(expenseId));
-    return result;
-  });
+  await deleteExpenses([...state.selectedExpenseIds]);
 }
 
 async function submitCsvConfig(event) {
@@ -2140,8 +2545,7 @@ async function confirmCsvImport() {
     renderApp();
     return;
   }
-  state.csvModal = null;
-  await mutate(() =>
+  const success = await mutate(() =>
     api(`/api/trackers/${tracker.id}/csv-imports`, {
       method: "POST",
       body: JSON.stringify({
@@ -2156,6 +2560,10 @@ async function confirmCsvImport() {
       }),
     }),
   );
+  if (success) {
+    formDrafts.delete(`${state.user.id}:${tracker.id}:csv-import-form`);
+    state.csvModal = null; renderApp();
+  }
 }
 
 async function submitProfile(event) {
@@ -2308,6 +2716,7 @@ async function openPlaidLink(twoFactorCode, connectionId = null) {
 }
 
 async function syncBankConnection(connectionId, trackerId = currentTracker().id, refreshAccounts = false) {
+  if (state.mutating || state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null) return;
   syncBankLookbackDaysFromInput();
   const params = new URLSearchParams({ days: String(state.bankLookbackDays) });
   if (refreshAccounts) params.set("refresh_accounts", "true");
@@ -2333,6 +2742,7 @@ async function syncBankConnection(connectionId, trackerId = currentTracker().id,
         if (connection?.provider !== "demo") message += " Plaid may not have fetched recent bank activity yet.";
       }
       state.bankSyncResult = { trackerId, message };
+      if (connection?.provider === "plaid") await refreshBankHealth(connectionId, true);
     }
   } catch (error) {
     if (currentTracker()?.id === trackerId) {
@@ -2356,7 +2766,7 @@ async function updateBankLookbackDays(event) {
 }
 
 async function removeBankConnection(connectionId) {
-  if (state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null) return;
+  if (state.mutating || state.syncingBankConnectionId !== null || state.removingBankConnectionId !== null) return;
   const tracker = currentTracker();
   const connection = state.bankConnections.find((row) => row.id === connectionId);
   if (!tracker || !connection) return;
@@ -2387,6 +2797,12 @@ function normalizeBankLookbackDays(value) {
   return Math.min(Math.max(Number(value) || 8, 1), 730);
 }
 
+function rememberBankDraft(transaction) {
+  const values = Object.fromEntries(Object.entries(transaction).filter(([key]) => key.startsWith("_review")));
+  const dirty = Boolean(transaction._reviewSelected || transaction._reviewCategoryId || (transaction._reviewDescription !== undefined && transaction._reviewDescription !== transaction.description) || (transaction._reviewPaidById && transaction._reviewPaidById !== transaction.default_paid_by_id) || transaction._reviewIsShared === false);
+  bankReviewDrafts.set(`${state.trackerId}:${transaction.id}`, { values, dirty });
+}
+
 function captureBankReviewState() {
   document.querySelectorAll("[data-bank-transaction]").forEach((element) => {
     const transaction = state.bankTransactions.find((row) => row.id === Number(element.dataset.bankTransaction));
@@ -2396,13 +2812,13 @@ function captureBankReviewState() {
     transaction._reviewCategoryId = Number(element.querySelector('[name="category_id"]')?.value) || null;
     transaction._reviewPaidById = Number(element.querySelector('[name="paid_by_id"]')?.value) || transaction.default_paid_by_id;
     transaction._reviewIsShared = Boolean(element.querySelector('[name="is_shared"]')?.checked);
+    rememberBankDraft(transaction);
   });
 }
 
 async function ignoreBankTransaction(event) {
   const transaction = state.bankTransactions.find((row) => row.id === Number(event.currentTarget.dataset.ignoreBank));
   if (!transaction) return;
-  if (!window.confirm(`Ignore "${transaction.description}" (${currency(transaction.amount, transaction.currency)}, ${transaction.date})?\n\nYou can restore it from Ignored transactions below.`)) return;
   await changeBankTransactionIgnored(event.currentTarget, transaction.id, "ignore");
 }
 
@@ -2411,6 +2827,7 @@ async function restoreBankTransaction(event) {
 }
 
 async function changeBankTransactionIgnored(button, transactionId, action) {
+  if (button.disabled || state.mutating) return;
   const trackerId = currentTracker().id;
   captureBankReviewState();
   state.ignoredBankExpanded = Boolean(document.querySelector("#ignored-bank-transactions")?.open);
@@ -2418,6 +2835,11 @@ async function changeBankTransactionIgnored(button, transactionId, action) {
   button.textContent = action === "ignore" ? "Ignoring…" : "Restoring…";
   try {
     await api(`/api/trackers/${trackerId}/bank/transactions/${transactionId}/${action}`, { method: "POST" });
+    if (action === "ignore") notify("Transaction ignored.", async () => {
+      await api(`/api/trackers/${trackerId}/bank/transactions/${transactionId}/restore`, { method: "POST" });
+      notify("Transaction restored.");
+    });
+    else notify("Transaction restored.");
     if (!state.user || currentTracker()?.id !== trackerId) return;
     const days = state.bankLookbackDays;
     const params = new URLSearchParams({ days: String(days) });
@@ -2430,6 +2852,7 @@ async function changeBankTransactionIgnored(button, transactionId, action) {
     const drafts = new Map([...state.bankTransactions, ...state.ignoredBankTransactions].map((row) => [row.id, row]));
     const withDraft = (row) => ({ ...drafts.get(row.id), ...row });
     state.bankTransactions = reviewRows.map(withDraft);
+    if (action === "ignore") bankReviewDrafts.delete(`${trackerId}:${transactionId}`);
     state.ignoredBankTransactions = ignoredRows.map(withDraft);
     state.error = "";
   } catch (error) {
@@ -2492,47 +2915,49 @@ function validateSelectedBankTransactionRows(form, rows) {
 
 async function importBankTransactions(event) {
   event.preventDefault();
-  const form = event.currentTarget;
+  captureBankReviewState();
   const tracker = currentTracker();
-  const rows = selectedBankTransactionRows();
-  if (!rows.length) {
-    const validation = form.querySelector("#bank-import-validation");
-    validation.textContent = "Select at least one bank transaction to import.";
-    validation.hidden = false;
+  const selected = state.bankTransactions.filter((row) => row._reviewSelected);
+  if (!selected.length) { notify("Select at least one transaction to import."); renderApp(); return; }
+  if (selected.some((row) => !row._reviewCategoryId || !(row._reviewPaidById || row.default_paid_by_id))) {
+    state.bankSearch = "";
+    renderApp();
+    validateSelectedBankTransactionRows(document.querySelector("#bank-import-form"), selectedBankTransactionRows());
     return;
   }
-  if (!validateSelectedBankTransactionRows(form, rows)) return;
-  const transactions = [];
-  for (const row of rows) {
-    const categoryId = Number(row.querySelector('[name="category_id"]').value);
-    transactions.push({
-      transaction_id: Number(row.dataset.bankTransaction),
-      category_id: categoryId,
-      paid_by_id: Number(row.querySelector('[name="paid_by_id"]').value),
-      description: row.querySelector('[name="description"]').value,
-      is_shared: row.querySelector('[name="is_shared"]').checked,
-    });
-  }
-  captureBankReviewState();
-  await mutate(() =>
-    api(`/api/trackers/${tracker.id}/bank/transactions/import`, {
-      method: "POST",
-      body: JSON.stringify({ transactions }),
-    }),
-  );
+  const transactions = selected.map((row) => ({
+    transaction_id: row.id, category_id: row._reviewCategoryId,
+    paid_by_id: row._reviewPaidById || row.default_paid_by_id,
+    description: row._reviewDescription ?? row.description,
+    is_shared: row._reviewIsShared ?? true,
+  }));
+  const success = await mutate(() => api(`/api/trackers/${tracker.id}/bank/transactions/import`, { method: "POST", body: JSON.stringify({ transactions }) }));
+  if (success) selected.filter((row) => !state.bankTransactions.some((item) => item.id === row.id)).forEach((row) => bankReviewDrafts.delete(`${tracker.id}:${row.id}`));
 }
 
-async function mutate(operation) {
+async function mutate(operation, { quiet = false } = {}) {
+  if (state.mutating) return false;
+  state.mutating = true;
   state.error = "";
   try {
-    const result = await operation();
-    if (result?.imported !== undefined) state.error = `Imported ${result.imported} expenses. Skipped ${result.skipped.length}.`;
-    await refresh();
-  } catch (error) {
-    state.error = error.message;
+    const pending = operation();
     renderApp();
-  }
+    const result = await pending;
+    clearActiveDraft();
+    if (!quiet) notify(result?.imported !== undefined ? `Imported ${result.imported} expenses. Skipped ${result.skipped?.length || 0}.` : "Changes saved.");
+    await refresh();
+    return true;
+  } catch (error) {
+    state.error = `${error.message} Your draft has been kept. Review the fields and try again.`;
+    renderApp();
+    return false;
+  } finally { state.mutating = false; renderApp(); }
 }
+
+window.addEventListener("beforeunload", (event) => {
+  if (!hasUnsavedChanges() && !state.mutating && !activeSubmission) return;
+  event.preventDefault(); event.returnValue = "";
+});
 
 window.addEventListener("popstate", handleNavigationChange);
 bootstrap();

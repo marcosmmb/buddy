@@ -292,3 +292,15 @@ Please keep changes focused, include tests for behavior changes, and avoid commi
 ## License
 
 Buddy is released under the MIT License. See [LICENSE](LICENSE).
+
+### Everyday workflow
+
+- Monthly Expenses opens with the expense list. Add expense, CSV tools, and monthly share settings expand when needed.
+- Search expenses by description, category, or payer. Category totals show a compact summary with optional payer details.
+- Bank review supports search, selecting the visible results, and applying a category, payer, or shared/individual type to all selected transactions. Selections remain selected when hidden by search and are included when importing.
+- Bank connections show the last successful Buddy sync separately from the bank's last successful update. A failed or stale bank update can explain why a successful sync has no recent transactions. Status checks are read-only and do not force the bank to refresh.
+- Form drafts and failed inline expense edits stay in memory across screen changes. They are not stored in browser storage and are cleared on sign-out or reload. Passwords and authentication codes are not retained. Use Discard draft / Discard edit to abandon changes, or Retry save after a failed inline save.
+- Deleting expenses offers a single-use Undo action for 10 minutes, available only to the user who deleted them and while they still have access to the tracker. Undo restores expense values and surviving bank-import links. Undo can be unavailable if required categories or members were removed, the bank transaction was imported again, or a backup replaced the tracker. Expired undo records are removed on subsequent expense deletions. Ignored bank transactions can be undone immediately or restored from Ignored transactions.
+- Mobile expense and bank-review screens keep selected counts and common actions in a bottom action bar.
+
+The undo feature adds an `expense_deletions` table automatically at application startup. Restart the backend after deploying these changes.

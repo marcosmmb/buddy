@@ -33,6 +33,7 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY app ./app
 COPY frontend ./frontend
+COPY pyproject.toml ./pyproject.toml
 
 VOLUME ["/data"]
 

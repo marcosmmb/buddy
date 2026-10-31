@@ -141,6 +141,16 @@ class Expense(Base):
     bank_transactions: Mapped[list[BankTransaction]] = relationship(back_populates="expense")
 
 
+class ExpenseDeletion(Base):
+    __tablename__ = "expense_deletions"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tracker_id: Mapped[int] = mapped_column(ForeignKey("trackers.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    expenses: Mapped[list] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class CsvImportConfig(Base):
     __tablename__ = "csv_import_configs"
     __table_args__ = (UniqueConstraint("tracker_id", "name", name="uq_tracker_csv_config"),)

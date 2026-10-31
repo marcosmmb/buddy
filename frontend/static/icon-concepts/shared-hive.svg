@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Buddy shared hive icon">
+  <rect width="128" height="128" rx="32" fill="#182737"/>
+  <path d="m49 25 24 14v28L49 81 25 67V39Z" fill="#f4be55"/>
+  <path d="m79 47 24 14v28l-24 14-24-14V61Z" fill="#fff8e7"/>
+  <path d="m73 50-18 11v17l18-11Z" fill="#dba139"/>
+</svg>

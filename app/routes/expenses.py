@@ -8,6 +8,7 @@ from litestar.params import Body
 from sqlalchemy.orm import joinedload
 
 from app.db import db_session
+from app.expense_undo import delete_with_undo, restore_deletion
 from app.models import Expense
 from app.schemas import ExpenseBulkDeletePayload, ExpenseCreatePayload
 from app.services import expense_query, get_tracker_for_user, serialize_expense
@@ -78,16 +79,16 @@ class ExpenseController(Controller):
             return serialize_expense(expense)
 
     @delete("/{expense_id:int}", status_code=200, sync_to_thread=True)
-    def delete_expense(self, request: Request, tracker_id: int, expense_id: int) -> dict[str, str]:
+    def delete_expense(self, request: Request, tracker_id: int, expense_id: int) -> dict[str, Any]:
         user = require_user(request)
         with db_session() as session:
             tracker = get_tracker_for_user(session, tracker_id, user)
             if tracker is None:
                 raise HTTPException(status_code=404, detail="Tracker not found")
-            deleted = session.query(Expense).filter(Expense.id == expense_id, Expense.tracker_id == tracker_id).delete()
-            if not deleted:
+            result = delete_with_undo(session, tracker_id, user.id, [expense_id])
+            if not result["deleted"]:
                 raise HTTPException(status_code=404, detail="Expense not found")
-        return {"status": "ok"}
+        return {"status": "ok", **result}
 
     @post("/bulk-delete", status_code=200, sync_to_thread=True)
     def bulk_delete_expenses(self, request: Request, tracker_id: int, data: Annotated[ExpenseBulkDeletePayload, Body()]) -> dict[str, Any]:
@@ -95,11 +96,11 @@ class ExpenseController(Controller):
         with db_session() as session:
             if get_tracker_for_user(session, tracker_id, user) is None:
                 raise HTTPException(status_code=404, detail="Tracker not found")
-            if not data.expense_ids:
-                return {"deleted": 0}
-            deleted = (
-                session.query(Expense)
-                .filter(Expense.tracker_id == tracker_id, Expense.id.in_(data.expense_ids))
-                .delete(synchronize_session=False)
-            )
-        return {"deleted": deleted}
+            return delete_with_undo(session, tracker_id, user.id, data.expense_ids)
+
+    @post("/undo/{token:str}", status_code=200, sync_to_thread=True)
+    def undo_delete(self, request: Request, tracker_id: int, token: str) -> dict[str, Any]:
+        user = require_user(request)
+        with db_session() as session:
+            load_tracker_member_context(session, tracker_id, user)
+            return restore_deletion(session, tracker_id, user.id, token)
